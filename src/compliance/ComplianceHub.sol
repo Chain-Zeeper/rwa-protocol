@@ -15,6 +15,8 @@ struct RuleParams {
 
 error INVALID_RULE();
 contract Compliancehub is AccessControl {
+    event PolicyUpdated(address indexed token, uint256 oldMask, uint256 newMask);
+
     mapping(uint8 => Rule) public ruleByIndex;
     uint8 public nextIndex;
     mapping(address => uint256) public policy;
@@ -38,7 +40,7 @@ contract Compliancehub is AccessControl {
             Rule storage rule = ruleByIndex[i];
             if (rule.ruleAddress == address(0)) revert INVALID_RULE();
 
-            if (!IRule(rule.ruleAddress).check(token, from, to, amt, ruleParams[token][i].params)) {
+            if (!IRule(rule.ruleAddress).check(from, to, amt, ruleParams[token][i].params)) {
                 return false;
             }
             remaining &= remaining - 1;   // clear lowest set bit, move to the next one
@@ -80,7 +82,13 @@ contract Compliancehub is AccessControl {
     function applyPolicyBatch(address token, Op[] calldata ops, uint256 expectedMask) external {
         require(policy[token] == expectedMask, "STALE_POLICY");   // compare-and-swap
         uint256 oldMask = policy[token];
-        for (uint i; i < ops.length; i++) { ops[i].adopt ? _applyPolicyParameters(token, ops[i].index, ops[i].params, ops[i].docHash) : delete ruleParams[token][ops[i].index]; }
+        for (uint i; i < ops.length; i++) {
+            if (ops[i].adopt) {
+                _applyPolicyParameters(token, ops[i].index, ops[i].params, ops[i].docHash);
+            } else {
+                delete ruleParams[token][ops[i].index];
+            }
+        }
         emit PolicyUpdated(token, oldMask, policy[token]);
     }
 

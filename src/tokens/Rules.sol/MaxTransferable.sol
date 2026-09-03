@@ -1,21 +1,15 @@
 import {IRule} from "../../token policy/IRule.sol";
 
-struct attester {
-    address attester;
-    bytes32 docHash;
-}
+contract MaxTransferable is IRule {
 
-contract KYC is IRule {
-
-    mapping(address=>bytes32) public attestation;
-    function check(address _from, address _to, uint256 _amount) external view returns (bool) {
-        /// call attestations on address of from and to 
-        return true;
+    function check(address _from, address _to, uint256 _amount, bytes memory params) external pure returns (bool) {
+        uint256 maxAmount = abi.decode(params, (uint256));
+        return _amount <= maxAmount;
     }
     function name() external pure returns (string memory) {
-        return "KYC";
+        return "MaxTransferable";
     }
     function ruleReference() external pure returns (string memory) {
-        return "KYC";
+        return "MaxTransferable";
     }
 }

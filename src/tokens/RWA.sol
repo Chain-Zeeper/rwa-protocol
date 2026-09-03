@@ -6,9 +6,9 @@ contract RWA is ERC20 {
     constructor(string memory name, string memory symbol) ERC20(name, symbol) {
     }
 
-    function _update(address from, address to, uint256 amount) internal {
+    function _update(address from, address to, uint256 amount) internal override {
         complianceHub.isCompliant(from, to, amount);
-        _transfer(from, to, amount);
+        super._update(from, to, amount);
     }
 
 }

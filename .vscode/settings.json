@@ -1,3 +1,4 @@
 {
-    "solidity.compileUsingRemoteVersion": "v0.8.28+commit.7893614a"
+    "solidity.compileUsingRemoteVersion": "v0.8.28+commit.7893614a",
+    "remote.autoForwardPortsFallback": 0
 }
