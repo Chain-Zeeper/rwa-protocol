@@ -6,13 +6,6 @@ import "./interface/IGoverner.sol";
 import {IConstitution} from "./VotingStrategies/interface/IConstitution.sol";
 
 
-struct VotingStyle {
-    address strategy;
-    uint16 quorumBps;
-    uint16 thresholdBps;
-    bytes32 config;
-}
-
 enum FunctionAuthority {
     Hub,        // governor can still call this directly
     Delegated   // fully delegated to the spoke; hub access revoked
@@ -41,6 +34,12 @@ struct DelegateRegistration {
     FunctionAuthority authority;
 }
 
+struct VotingParametersRegistration {
+    address target;
+    bytes4 selector;
+    VotingParameters params;
+}
+
 contract Governor is IGoverner,Initializable {
     constructor() { _disableInitializers(); }
 
@@ -56,7 +55,7 @@ contract Governor is IGoverner,Initializable {
     mapping(address => mapping(uint256 => Approvals)) public approvals;
     // hub => hub proposal id => this contract's proposal id for that approval
     mapping(address => mapping(uint256 => uint256)) public approvalProposalId;
-
+    mapping(address => mapping(bytes4 => VotingParameters)) public votingParameters;
     mapping(uint256 => address[]) public delegates;
 
     event ProposalCreated(
@@ -87,21 +86,42 @@ contract Governor is IGoverner,Initializable {
     function initialize(
         address _constitutionalStrategy,
         bytes32 constitutionalConfig,
-        DelegateRegistration[] calldata registrations
+        DelegateRegistration[] memory delegateRegistrations,
+        VotingParametersRegistration[] memory votingParameterRegistrations
     ) external initializer {
         _changeConstitutionalStrategy(_constitutionalStrategy);
-        for (uint256 i = 0; i < registrations.length; i++) {
-            require(registrations[i].target != address(this), "governor selectors seeded internally");
-            require(registrations[i].delegate != address(this), "cannot delegate to self");
+        for (uint256 i = 0; i < delegateRegistrations.length; i++) {
+            require(delegateRegistrations[i].target != address(this), "governor selectors seeded internally");
             _setDelegateGovernance(
-                registrations[i].target,
-                registrations[i].selector,
-                registrations[i].delegate,
-                registrations[i].authority
+                delegateRegistrations[i].target,
+                delegateRegistrations[i].selector,
+                delegateRegistrations[i].delegate,
+                delegateRegistrations[i].authority
+            );
+        }
+        for (uint256 i = 0; i < votingParameterRegistrations.length; i++) {
+            require(votingParameterRegistrations[i].target != address(this), "governor selectors seeded internally");
+            _setVotingParameters(
+                votingParameterRegistrations[i].target,
+                votingParameterRegistrations[i].selector,
+                votingParameterRegistrations[i].params
             );
         }
     }
 
+    function _setVotingParameters(address target, bytes4 selector, VotingParameters memory params) internal {
+        votingParameters[target][selector] = params;
+    }
+
+    function setVotingParameters(
+        address target,
+        bytes4 selector,
+        uint16 quorumBps,
+        uint16 thresholdBps,
+        uint256 votingPeriod
+    ) external onlyGovernance {
+        _setVotingParameters(target, selector, VotingParameters(quorumBps, thresholdBps, votingPeriod));
+    }
     // ---------------------------------------------------------------
     // delegation
     // ---------------------------------------------------------------
@@ -247,24 +267,40 @@ contract Governor is IGoverner,Initializable {
     ) internal returns (uint256) {
         bytes32 actionHash = keccak256(abi.encode(targets, values, calldatas, descriptionHash));
         uint256 proposalId = uint256(keccak256(abi.encode(address(this), block.chainid, actionHash, nounce)));
+        VotingParameters memory defaults = IConstitution(constitution).getDefaultVotingParameters();
 
-        // written before the delegate loop: the delegates call back to read it
-        proposals[proposalId] = Proposal({
-            proposer: msg.sender,
-            voteStart: block.timestamp,
-            voteEnd: block.timestamp + 3 days, // TODO: configurable voting period
-            forVotes: 0,
-            againstVotes: 0,
-            actionHash: actionHash,
-            descriptionHash: descriptionHash,
-            nounce: nounce,
-            executed: false
-        });
+        // written before the delegate loop: the delegates call back to read it.
+        // voteEnd starts out provisional (default voting period) so the
+        // "hub voting still open" check a delegate's callback performs holds
+        // mid-loop; quorumBps/thresholdBps/voteEnd are all finalized after
+        // the loop once every target's overrides are known.
+        Proposal storage proposal = proposals[proposalId];
+        proposal.proposer = msg.sender;
+        proposal.voteStart = block.timestamp;
+        proposal.voteEnd = block.timestamp + defaults.votingPeriod;
+        proposal.actionHash = actionHash;
+        proposal.descriptionHash = descriptionHash;
+        proposal.nounce = nounce;
 
+        uint16 quorumBps = 0;
+        uint16 thresholdBps = 0;
+        uint256 votingPeriod = 0;
         for (uint256 i = 0; i < targets.length; i++) {
-            bytes4 selector = _selectorOf(calldatas[i]);
-            DelageteGovernace memory delagate = delagateGovernance[targets[i]][selector];
+            if (calldatas[i].length == 0) continue; // plain value transfer, nothing to register or delegate
 
+            bytes4 selector = _selectorOf(calldatas[i]);
+            VotingParameters memory params = votingParameters[targets[i]][selector];
+            if (params.quorumBps > quorumBps) {
+                quorumBps = params.quorumBps;
+            }
+            if (params.thresholdBps > thresholdBps) {
+                thresholdBps = params.thresholdBps;
+            }
+            if (params.votingPeriod > votingPeriod) {
+                votingPeriod = params.votingPeriod;
+            }
+
+            DelageteGovernace memory delagate = delagateGovernance[targets[i]][selector];
             if (delagate.governer != address(0) && delagate.authority == FunctionAuthority.Delegated) {
                 IGoverner(delagate.governer).proposeApproval(
                     address(this),
@@ -277,6 +313,15 @@ contract Governor is IGoverner,Initializable {
                 _addDelegate(proposalId, delagate.governer);
             }
         }
+
+        // fields with no per-target/selector override fall back to the constitution's default
+        if (quorumBps == 0) quorumBps = defaults.quorumBps;
+        if (thresholdBps == 0) thresholdBps = defaults.thresholdBps;
+        if (votingPeriod == 0) votingPeriod = defaults.votingPeriod;
+
+        proposal.quorumBps = quorumBps;
+        proposal.thresholdBps = thresholdBps;
+        proposal.voteEnd = proposal.voteStart + votingPeriod;
 
         emit ProposalCreated(proposalId, msg.sender, targets, values, calldatas, nounce, descriptionHash);
         nounce++;
@@ -319,10 +364,6 @@ contract Governor is IGoverner,Initializable {
         // the actions passed in must be the ones that were proposed
         bytes32 actionHash = keccak256(abi.encode(targets, values, calldatas, descriptionHash));
         require(actionHash == proposal.actionHash, "actions do not match proposal");
-        require(
-            proposalId == uint256(keccak256(abi.encode(address(this), block.chainid, actionHash, _nounce))),
-            "proposal id mismatch"
-        );
 
         // every delegate that was required at proposal time must have approved
         address[] storage required = delegates[proposalId];

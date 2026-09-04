@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
 import { IConstitution } from "../../VotingStrategies/interface/IConstitution.sol";
-import { IGoverner, Proposal } from "../../interface/IGoverner.sol";
+import { IGoverner, Proposal, VotingParameters } from "../../interface/IGoverner.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 // Draft: RWA-token-balance-weighted voting strategy. Voting power is read
@@ -11,13 +11,16 @@ contract RWAHolder is IConstitution {
     address public immutable rwaToken;
     uint256 public immutable thresholdBps;
     uint256 public immutable quorumBps;
+    uint256 public immutable votingPeriod;
 
     address complianceHub;
 
-    constructor(address _rwaToken, uint256 _thresholdBps, uint256 _quorumBps) {
+    constructor(address _rwaToken, uint256 _thresholdBps, uint256 _quorumBps, uint256 _votingPeriod) {
+        require(_thresholdBps <= 10000 && _quorumBps <= 10000, "bps must be <= 10000");
         rwaToken = _rwaToken;
         thresholdBps = _thresholdBps;
         quorumBps = _quorumBps;
+        votingPeriod = _votingPeriod;
     }
 
     function name() external pure returns (string memory) {
@@ -33,6 +36,7 @@ contract RWAHolder is IConstitution {
     }
 
     function getVotingPower(address voter) external view returns (uint256) {
+        
         return IERC20(rwaToken).balanceOf(voter);
     }
 
@@ -51,7 +55,12 @@ contract RWAHolder is IConstitution {
         return quorumBps * IERC20(rwaToken).totalSupply() / 10000;
     }
 
+    function getDefaultVotingParameters() external view returns (VotingParameters memory) {
+        return VotingParameters(uint16(quorumBps), uint16(thresholdBps), votingPeriod);
+    }
+
     function hasPassed(address governor, uint256 proposal) external view returns (bool) {
+        if (IERC20(rwaToken).totalSupply() == 0) return false;
         Proposal memory p = IGoverner(governor).getProposal(proposal);
         uint256 totalVotes = p.forVotes + p.againstVotes;
         return p.forVotes >= getExecuteThreshold() && totalVotes >= getQuorum();

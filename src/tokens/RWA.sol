@@ -7,7 +7,7 @@ contract RWA is ERC20 {
     }
 
     function _update(address from, address to, uint256 amount) internal override {
-        complianceHub.isCompliant(from, to, amount);
+        require(complianceHub.canTransfer(address(this), from, to, amount), "transfer not compliant");
         super._update(from, to, amount);
     }
 

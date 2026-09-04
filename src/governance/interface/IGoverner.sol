@@ -3,6 +3,8 @@ pragma solidity ^0.8.20;
 
 struct Proposal {
     address proposer;
+    uint16 quorumBps;
+    uint16 thresholdBps;
     uint256 voteStart;
     uint256 voteEnd;
     uint256 forVotes;
@@ -12,6 +14,15 @@ struct Proposal {
     uint256 nounce;
     bool executed;
 }
+
+// shared shape for both a governor's per-target/selector overrides and a
+// constitution's fallback defaults, so the two line up field-for-field
+struct VotingParameters {
+    uint16 quorumBps;
+    uint16 thresholdBps;
+    uint256 votingPeriod;
+}
+
 interface IGoverner{
     function propose(
         address[] calldata targets,

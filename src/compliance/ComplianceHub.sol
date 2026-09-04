@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: MIT
 import "../token policy/IRule.sol";
+import {IComplianceHub} from "../token policy/IComplianceHub.sol";
 import "@openzeppelin/contracts/access/AccessControl.sol";
 
 struct Rule{
@@ -14,7 +15,7 @@ struct RuleParams {
 }
 
 error INVALID_RULE();
-contract Compliancehub is AccessControl {
+contract Compliancehub is IComplianceHub, AccessControl {
     event PolicyUpdated(address indexed token, uint256 oldMask, uint256 newMask);
 
     mapping(uint8 => Rule) public ruleByIndex;
