@@ -3,19 +3,25 @@ pragma solidity ^0.8.27;
 import { IConstitution } from "../../VotingStrategies/interface/IConstitution.sol";
 import { IGoverner, Proposal, VotingParameters } from "../../interface/IGoverner.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
 // Draft: RWA-token-balance-weighted voting strategy. Voting power is read
 // straight off current token balance, not a proposal-time snapshot -- see
 // getVotes below. Revisit once RWA.sol is on ERC20Votes.
-contract RWAHolder is IConstitution {
-    address public immutable rwaToken;
-    uint256 public immutable thresholdBps;
-    uint256 public immutable quorumBps;
-    uint256 public immutable votingPeriod;
+//
+// Initializable (rather than immutable constructor args) so this can be
+// registered as a template and cloned via ConstitutionRegistry, same as Council.
+contract RWAHolder is IConstitution, Initializable {
+    address public rwaToken;
+    uint256 public thresholdBps;
+    uint256 public quorumBps;
+    uint256 public votingPeriod;
 
     address complianceHub;
 
-    constructor(address _rwaToken, uint256 _thresholdBps, uint256 _quorumBps, uint256 _votingPeriod) {
+    constructor() { _disableInitializers(); }
+
+    function initialize(address _rwaToken, uint256 _thresholdBps, uint256 _quorumBps, uint256 _votingPeriod) external initializer {
         require(_thresholdBps <= 10000 && _quorumBps <= 10000, "bps must be <= 10000");
         rwaToken = _rwaToken;
         thresholdBps = _thresholdBps;
