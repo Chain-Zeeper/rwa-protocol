@@ -311,23 +311,11 @@ The external system settles its own consent however it likes, *before* it calls 
 - **Execution is atomic.** A failing action takes the whole proposal down; nothing is half-applied. Revert reasons and custom errors bubble up unchanged.
 - **Vetoes bind owners too.** An owned governor cannot fast-path past a delegated selector.
 - **Approvals are one-way and idempotent.** Approving twice never rewrites the original decision timestamp.
-- **Losing the owner is unrecoverable**, so both routes to it are closed — transfer is two-step and `renounceOwnership` reverts. See [Why ownership is two-step](#why-ownership-is-two-step).
+
 
 ---
 
-### Why ownership is two-step
 
-`Ownable2Step` looks like boilerplate here, but the stake is higher than for a normal admin role. Under `Owned` the owner is not an administrator sitting *beside* an electorate — **it is the entire electorate.**
-
-A single-step `transferOwnership` to a mistyped or unreachable address would leave `canPropose` false for everyone. And there would be no way back: recovering means calling `changeConstitutionalStrategy` to install a working constitution, that is `onlyGovernance`, so it needs an executed proposal, which needs an eligible proposer — and the only eligible proposer is the owner that was just lost. The governor and every contract it owns would be frozen permanently.
-
-Two-step makes the incoming owner prove control by calling `acceptOwnership` before anything moves. An address that cannot call it simply never becomes the owner, and the mistake costs nothing but a second transaction.
-
-`renounceOwnership` reverts for the same reason — deliberately unsupported, because it is that failure with no typo required. Hand the governor to a Council or a token DAO instead; that is a constitution swap, not an abdication.
-
-The hazard is specific to `Owned`. `Council` uses plain `Ownable`, because its owner manages *membership* while the members are the electorate — a lost council owner freezes the roster but the council keeps governing.
-
----
 
 ### Setting a Council threshold
 
