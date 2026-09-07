@@ -1164,7 +1164,7 @@ contract GovernanceTest is Test {
         assertEq(treasury.balance, 1 ether);
     }
 
-    function test_ANY_SELECTOR_IsTheMaxSelector() public view {
+    function test_ANY_SELECTOR_IsTheMaxSelector() public {
         assertEq(governor.ANY_SELECTOR(), bytes4(0xffffffff));
     }
 
@@ -1373,7 +1373,7 @@ contract GovernanceTest is Test {
 
     // `delegates` is a public array getter, so an out-of-range index reverts;
     // that is how we assert the list is exactly `expected` long
-    function _assertDelegateList(Governor g, uint256 proposalId, address[] memory expected) internal view {
+    function _assertDelegateList(Governor g, uint256 proposalId, address[] memory expected) internal {
         for (uint256 i = 0; i < expected.length; i++) {
             assertEq(g.delegates(proposalId, i), expected[i], "unexpected delegate at index");
         }
