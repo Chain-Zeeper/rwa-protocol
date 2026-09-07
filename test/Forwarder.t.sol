@@ -140,7 +140,7 @@ contract ForwarderTest is Test {
     // wiring
     // ---------------------------------------------------------------
 
-    function test_CloneInheritsTrustedForwarderFromImplementation() public view {
+    function test_CloneInheritsTrustedForwarderFromImplementation() public {
         assertEq(governor.trustedForwarder(), address(forwarder));
         assertTrue(governor.isTrustedForwarder(address(forwarder)));
         assertFalse(governor.isTrustedForwarder(relayer));

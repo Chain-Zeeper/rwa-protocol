@@ -399,7 +399,7 @@ contract GovernanceTest is Test {
         council.removeCouncilMember(carol);
     }
 
-    function test_GetVotingPowerMatchesMembership() public view {
+    function test_GetVotingPowerMatchesMembership() public {
         assertEq(council.getVotingPower(alice), 1);
         assertEq(council.getVotingPower(outsider), 0);
     }
@@ -680,7 +680,7 @@ contract GovernanceTest is Test {
         governor.execute(proposalId, 0, targets, values, calldatas, descriptionHash);
     }
 
-    function test_CouncilDefaultVotingParametersMatchInitialize() public view {
+    function test_CouncilDefaultVotingParametersMatchInitialize() public  {
         VotingParameters memory params = council.getDefaultVotingParameters();
         assertEq(params.quorumBps, TWO_THIRDS_BPS);
         assertEq(params.thresholdBps, TWO_THIRDS_BPS);
