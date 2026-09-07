@@ -39,6 +39,10 @@ contract Council is IConstitution, Ownable,Initializable {
         address[] memory councilMembers
     ) external initializer {
         _transferOwnership(owner);
+        // A zero period leaves voteEnd == voteStart: a ballot cast in any later
+        // block reverts as closed, and every delegated proposal fails at the
+        // delegate's `block.timestamp < hubProposal.voteEnd` check.
+        require(votingPeriod > 0, "zero voting period");
         _setDefaultVotingParameters(VotingParameters(quorumBps, thresholdBps, votingPeriod));
         for (uint256 i = 0; i < councilMembers.length; i++) {
             _addCouncilMember(councilMembers[i]);

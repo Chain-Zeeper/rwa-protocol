@@ -151,7 +151,7 @@ contract GovernanceTest is Test {
             target: address(dPool),
             delegate: address(spokeGovernor),
             selector: MockVillagePool.withdrawTo.selector,
-            authority: FunctionAuthority.Delegated
+            authority: FunctionAuthority.Hard
         });
 
         Governor dGovernorImpl = new Governor(address(0));
@@ -183,7 +183,7 @@ contract GovernanceTest is Test {
             target: target,
             delegate: address(spokeGovernor),
             selector: selector,
-            authority: FunctionAuthority.Delegated
+            authority: FunctionAuthority.Hard
         });
 
         Governor impl = new Governor(address(0));
@@ -612,7 +612,7 @@ contract GovernanceTest is Test {
     function test_RevertWhen_SetDelegateGovernanceByOutsider() public {
         vm.prank(outsider);
         vm.expectRevert("only via executed proposal");
-        governor.setDelegateGovernance(address(pool), MockVillagePool.setFeeBps.selector, outsider, FunctionAuthority.Delegated);
+        governor.setDelegateGovernance(address(pool), MockVillagePool.setFeeBps.selector, outsider, FunctionAuthority.Hard);
     }
 
     // ---------------------------------------------------------------
@@ -1062,13 +1062,13 @@ contract GovernanceTest is Test {
             target: address(token),
             delegate: address(wildcardSpoke),
             selector: 0xffffffff,
-            authority: FunctionAuthority.Delegated
+            authority: FunctionAuthority.Hard
         });
         registrations[1] = DelegateRegistration({
             target: address(token),
             delegate: address(specificSpoke),
             selector: IERC20.transfer.selector,
-            authority: FunctionAuthority.Delegated
+            authority: FunctionAuthority.Hard
         });
 
         Governor impl = new Governor(address(0));
@@ -1356,7 +1356,7 @@ contract GovernanceTest is Test {
             target: target,
             delegate: spoke,
             selector: selector,
-            authority: FunctionAuthority.Delegated
+            authority: FunctionAuthority.Hard
         });
     }
 

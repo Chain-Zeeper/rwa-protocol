@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
-import { IConstitution } from "./interface/IConstitution.sol";
-import { IGoverner, Proposal, VotingParameters } from "../interface/IGoverner.sol";
+import { IConstitution } from "../interface/IConstitution.sol";
+import { IGoverner, Proposal, VotingParameters } from "../../interface/IGoverner.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
@@ -23,6 +23,10 @@ contract RWAHolder is IConstitution, Initializable {
 
     function initialize(address _rwaToken, uint256 _thresholdBps, uint256 _quorumBps, uint256 _votingPeriod) external initializer {
         require(_thresholdBps <= 10000 && _quorumBps <= 10000, "bps must be <= 10000");
+        // A zero period leaves voteEnd == voteStart: a ballot cast in any later
+        // block reverts as closed, and every delegated proposal fails at the
+        // delegate's `block.timestamp < hubProposal.voteEnd` check.
+        require(_votingPeriod > 0, "zero voting period");
         rwaToken = _rwaToken;
         thresholdBps = _thresholdBps;
         quorumBps = _quorumBps;

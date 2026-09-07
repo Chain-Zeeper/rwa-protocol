@@ -111,6 +111,31 @@ contract MockSafe {
         return keccak256(abi.encode(address(this), block.chainid, to, value, keccak256(data), _nonce));
     }
 
+    // Safe's MultiSend, in behaviour if not in encoding. The real thing is
+    // delegatecalled, so it runs in the Safe's own context and every inner call
+    // still carries msg.sender == the Safe; sequential calls from here are
+    // equivalent for anything that only inspects the caller. This is what the
+    // Transaction Builder produces whenever owners batch, and it is why a Safe
+    // needs no special contract support to do several things atomically.
+    function execTransactions(
+        address[] memory to,
+        uint256[] memory value,
+        bytes[] memory data,
+        bytes memory signatures
+    ) external payable {
+        checkSignatures(getTransactionHash(address(this), 0, abi.encode(to, value, data), nonce), signatures);
+        nonce++;
+        for (uint256 i = 0; i < to.length; i++) {
+            (bool ok, bytes memory ret) = to[i].call{value: value[i]}(data[i]);
+            if (!ok) {
+                if (ret.length > 0) {
+                    assembly { revert(add(ret, 0x20), mload(ret)) }
+                }
+                revert("GS013");
+            }
+        }
+    }
+
     function execTransaction(address to, uint256 value, bytes memory data, bytes memory signatures)
         external
         payable

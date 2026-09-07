@@ -5,24 +5,30 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
 import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./interface/IGoverner.sol";
 import {IConstitution} from "./constitution/interface/IConstitution.sol";
 
 
+// Both levels are real vetoes -- the delegate must approve before the hub can
+// execute either way. What differs is who owns the registration, and so how
+// hard the veto is to get rid of.
 enum FunctionAuthority {
-    Hub,        // governor can still call this directly
-    Delegated   // fully delegated to the spoke; hub access revoked
+    // Soft veto. The delegate must still approve, but the hub can move or
+    // revoke the registration through an ordinary proposal. Governance can
+    // therefore overrule it in two steps -- revoke, then re-propose -- which is
+    // a speed bump and an on-chain record rather than a hard stop. For a
+    // sign-off you want observed but not absolute.
+    Soft,
+    // Hard veto. The hub is locked out of the slot entirely: only the delegate
+    // can move or drop it. That lockout is the mechanism, not an oversight --
+    // a hub able to reassign a live veto would reassign it to a puppet.
+    Hard
 }
 
 struct DelageteGovernace {
     address governer;
     FunctionAuthority authority;
-}
-
-struct Action {
-    address target;
-    uint256 value;
-    bytes data;
 }
 
 struct Approvals {
@@ -43,9 +49,9 @@ struct VotingParametersRegistration {
     VotingParameters params;
 }
 
-contract Governor is IGoverner, Initializable, ERC2771Context {
+contract Governor is IGoverner, Initializable, ReentrancyGuard, ERC2771Context {
     // trustedForwarder is baked into this implementation's bytecode, so every
-    // clone against it shares one protocol-wide relayer
+    // clone shares one protocol-wide relayer.
     constructor(address trustedForwarder) ERC2771Context(trustedForwarder) {
         _disableInitializers();
     }
@@ -55,10 +61,21 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
     // the bar but never undercut a blanket one.
     bytes4 public constant ANY_SELECTOR = 0xffffffff;
 
+    // The exemption sentinel: this governor registered as its own delegate for
+    // (target, selector) means that selector is exempt from the target's
+    // wildcard. Kept in the same mapping as every other rule so a veto holder
+    // has one surface to audit rather than a second place a hole could hide.
+    function EXEMPT() public view returns (address) {
+        return address(this);
+    }
+
+    function isExempt(address target, bytes4 selector) public view returns (bool) {
+        return delagateGovernance[target][selector].governer == address(this);
+    }
+
     address public constitution;
     uint256 public nounce;
     mapping(uint256 => Proposal) public proposals;
-    mapping(uint256 => Action[]) internal actions;
     mapping(uint256 => mapping(address => bool)) public hasVoted;
 
     mapping(address => mapping(bytes4 => DelageteGovernace)) public delagateGovernance;
@@ -88,6 +105,11 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
 
     event ProposalExecuted(uint256 indexed proposalId, address indexed executor);
 
+    event DelegateGovernanceChanged(
+        address indexed target, bytes4 indexed selector, address delegate, FunctionAuthority authority
+    );
+
+
     // ---------------------------------------------------------------
     // constitutional strategy
     // ---------------------------------------------------------------
@@ -106,9 +128,17 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         DelegateRegistration[] memory delegateRegistrations,
         VotingParametersRegistration[] memory votingParameterRegistrations
     ) external initializer {
+        // Same check changeConstitutionalStrategy makes. Without it a governor
+        // can be deployed with no constitution, and it is unrecoverable: every
+        // propose reverts, so the proposal that would install one can never be
+        // made.
+        require(_constitutionalStrategy != address(0), "cannot set to zero address");
         _changeConstitutionalStrategy(_constitutionalStrategy);
+        // The governor's own selectors are registerable here on purpose:
+        // gating changeConstitutionalStrategy only by later proposal would
+        // leave a window where a fresh owner can swap its own constitution.
         for (uint256 i = 0; i < delegateRegistrations.length; i++) {
-            require(delegateRegistrations[i].target != address(this), "governor selectors seeded internally");
+            _requireWritableDelegateSlot(delegateRegistrations[i].selector, delegateRegistrations[i].delegate);
             _setDelegateGovernance(
                 delegateRegistrations[i].target,
                 delegateRegistrations[i].selector,
@@ -117,7 +147,9 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
             );
         }
         for (uint256 i = 0; i < votingParameterRegistrations.length; i++) {
-            require(votingParameterRegistrations[i].target != address(this), "governor selectors seeded internally");
+            _requireBoundedBps(
+                votingParameterRegistrations[i].params.quorumBps, votingParameterRegistrations[i].params.thresholdBps
+            );
             _setVotingParameters(
                 votingParameterRegistrations[i].target,
                 votingParameterRegistrations[i].selector,
@@ -137,11 +169,28 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         uint16 thresholdBps,
         uint256 votingPeriod
     ) external onlyGovernance {
+        _requireBoundedBps(quorumBps, thresholdBps);
         _setVotingParameters(target, selector, VotingParameters(quorumBps, thresholdBps, votingPeriod));
     }
     // ---------------------------------------------------------------
     // delegation
     // ---------------------------------------------------------------
+
+    // The sentinel is meaningless on the wildcard slot -- a blanket veto
+    // exempting everything is just no blanket veto, which address(0) says
+    // plainly -- and a slot holding it would read as a live veto while
+    // enforcing nothing. Shared with initialize so seeding cannot write what
+    // setDelegateGovernance refuses.
+    function _requireWritableDelegateSlot(bytes4 selector, address delegate) internal view {
+        require(delegate != address(this) || selector != ANY_SELECTOR, "cannot exempt the wildcard itself");
+    }
+
+    // Above 10000 the ceiling-rounded bar exceeds the whole electorate and the
+    // selector becomes permanently unpassable -- including, if set on
+    // setVotingParameters itself, the proposal that would undo it.
+    function _requireBoundedBps(uint16 quorumBps, uint16 thresholdBps) internal pure {
+        require(quorumBps <= 10000 && thresholdBps <= 10000, "bps must be <= 10000");
+    }
 
     function _setDelegateGovernance(
         address target,
@@ -150,24 +199,48 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         FunctionAuthority authority
     ) internal {
         delagateGovernance[target][selector] = DelageteGovernace(delegate, authority);
+        emit DelegateGovernanceChanged(target, selector, delegate, authority);
     }
 
+    // The one way a delegation is written, moved or dropped -- dropping is
+    // setting the slot to address(0). Whoever holds the slot controls it: the
+    // hub grants by executed proposal, and once Hard the hub is locked out.
+    //
+    // That lockout is the mechanism, not an oversight: a hub able to reassign a
+    // live veto would reassign it to a puppet. The holder passing it to a third
+    // party is not the mirror risk it looks like -- a veto holder can only
+    // block, never execute, and can already block by never approving.
     function setDelegateGovernance(
         address target,
         bytes4 selector,
         address delegate,
         FunctionAuthority authority
     ) external {
-        require(delegate != address(this), "cannot delegate to self");
+        _requireWritableDelegateSlot(selector, delegate);
 
         DelageteGovernace memory current = delagateGovernance[target][selector];
 
-        if (current.governer != address(0) && current.authority == FunctionAuthority.Delegated) {
+        // A live hard veto on this exact slot belongs to whoever holds it.
+        if (current.governer != address(0) && current.authority == FunctionAuthority.Hard) {
             if (msg.sender != current.governer) {
-                revert("only delegated governer can call this function");
+                revert("only the veto holder can move a hard veto");
             }
             _setDelegateGovernance(target, selector, delegate, authority);
             return;
+        }
+
+        // Carving out of a hard blanket veto needs that holder's consent --
+        // the wildcard lives at a different key, so nothing else would stop the
+        // hub writing an exemption and walking out of a veto it cannot revoke.
+        // Gated on the exemption alone: adding a veto only tightens, and
+        // dropping a third party's soft veto leaves the blanket untouched.
+        if (delegate == address(this) && selector != ANY_SELECTOR) {
+            DelageteGovernace memory blanket = delagateGovernance[target][ANY_SELECTOR];
+            if (blanket.governer != address(0) && blanket.authority == FunctionAuthority.Hard) {
+                require(msg.sender == blanket.governer, "only the blanket veto holder can carve an exemption");
+                _setDelegateGovernance(target, selector, delegate, authority);
+                return;
+            }
         }
 
         if (msg.sender != address(this)) {
@@ -176,27 +249,22 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         _setDelegateGovernance(target, selector, delegate, authority);
     }
 
-    function restoreDelegateGovernance(address target, bytes4 selector) external {
-        DelageteGovernace memory current = delagateGovernance[target][selector];
-
-        if (current.authority == FunctionAuthority.Delegated) {
-            require(msg.sender == current.governer, "only delegated governer can restore");
-        } else {
-            require(msg.sender == address(this), "only via executed proposal");
-        }
-
-        delete delagateGovernance[target][selector];
-    }
-
     // ---------------------------------------------------------------
     // approvals (this contract acting as a delegate for some hub)
     // ---------------------------------------------------------------
 
     function approveProposal(address hub, uint256 hubProposalId) external onlyGovernance {
+        // Ids are precomputable from (governor, chainid, actionHash, nounce),
+        // so without this a holder could be walked into pre-approving an id
+        // whose proposal is created only afterwards. Matters most on the direct
+        // route, which unlike the mirrored request shows them no actions.
+        require(IGoverner(hub).getProposal(hubProposalId).voteStart != 0, "no such hub proposal");
+
         if (approvals[hub][hubProposalId].approved) {
             return; // idempotent: keep the original timestamp
         }
         approvals[hub][hubProposalId] = Approvals({ approved: true, timestamp: block.timestamp });
+
         emit ProposalApproved(hub, hubProposalId, block.timestamp);
     }
 
@@ -211,7 +279,7 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         uint256[] calldata values,
         bytes[] calldata calldatas,
         bytes32 descriptionHash
-    ) external returns (uint256) {
+    ) external nonReentrant returns (uint256) {
         require(targets.length == values.length && targets.length == calldatas.length, "length mismatch");
 
         // already have an approval proposal for this hub proposal: idempotent, hand back the id
@@ -245,15 +313,27 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         require(actionHash == hubProposal.actionHash, "actions do not match proposal");
     }
 
-    function _proposeApprovalAction(address hub, uint256 hubProposalId) internal returns (uint256) {
-        address[] memory t = new address[](1);
-        uint256[] memory v = new uint256[](1);
-        bytes[] memory c = new bytes[](1);
+    // The action a mirrored approval request carries, derived from the pair it
+    // refers to rather than stored.
+    function _approvalAction(address hub, uint256 hubProposalId)
+        internal
+        view
+        returns (address[] memory t, uint256[] memory v, bytes[] memory c, bytes32 descriptionHash)
+    {
+        t = new address[](1);
+        v = new uint256[](1);
+        c = new bytes[](1);
         t[0] = address(this);
-        v[0] = 0;
-        c[0] = abi.encodeWithSelector(this.approveProposal.selector, hub, hubProposalId);     
-        return _propose(msg.sender, t, v, c, keccak256(abi.encode("approval", hub, hubProposalId)));
+        c[0] = abi.encodeWithSelector(this.approveProposal.selector, hub, hubProposalId);
+        descriptionHash = keccak256(abi.encode("approval", hub, hubProposalId));
     }
+
+    function _proposeApprovalAction(address hub, uint256 hubProposalId) internal returns (uint256) {
+        (address[] memory t, uint256[] memory v, bytes[] memory c, bytes32 descriptionHash) =
+            _approvalAction(hub, hubProposalId);
+        return _propose(msg.sender, t, v, c, descriptionHash);
+    }
+
     function getProposal(uint256 proposalId) external view returns (Proposal memory) {
         return proposals[proposalId];
     }
@@ -263,30 +343,22 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         uint256[] calldata values,
         bytes[] calldata calldatas,
         bytes32 descriptionHash
-    ) external returns (uint256 proposalId) {
+    ) external nonReentrant returns (uint256 proposalId) {
         require(targets.length == values.length && targets.length == calldatas.length, "Mismatched proposal parameters");
         address proposer = _msgSender();
         require(IConstitution(constitution).canPropose(proposer), "Proposer not eligible");
 
         proposalId = _propose(proposer, targets, values, calldatas, descriptionHash);
 
-        // Some electorates are settled the moment the proposal exists: a
-        // constitution whose authority-holder is the proposer has nobody left
-        // to hear from, and says so through hasPassed. Run it now -- that is
-        // what makes an owned governor behave like Ownable from a single call,
-        // with a full proposal trail behind it.
+        // A constitution whose authority holder is the proposer has nobody left
+        // to hear from and says so through hasPassed, so the proposal is
+        // already settled -- running it here is what makes an owned governor
+        // behave like Ownable from one call. No ballot is cast on the
+        // proposer's behalf; proposing and supporting stay separate acts.
         //
-        // Deliberately does NOT cast a ballot on the proposer's behalf.
-        // Proposing and supporting are separate acts for a real electorate, and
-        // conflating them would start every council proposal one vote up.
-        //
-        // Anything not yet settled simply stands open and follows the normal
-        // path: an electorate that still has to turn out, or a delegated
-        // selector whose veto-holder was only just notified -- in this very
-        // transaction, so it cannot possibly have approved yet. Those are left
-        // for execute() to pick up, never reverted, because reverting here
-        // would roll back _propose and with it the proposeApproval calls that
-        // notify the delegates.
+        // Anything unsettled stands open for execute() to pick up, and is never
+        // reverted -- reverting would roll back _propose and with it the
+        // proposeApproval calls that notify the delegates.
         if (canExecuteNow(proposalId)) {
             _runActions(proposalId, targets, values, calldatas);
         }
@@ -300,7 +372,14 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         bytes32 descriptionHash
     ) internal returns (uint256) {
         bytes32 actionHash = keccak256(abi.encode(targets, values, calldatas, descriptionHash));
-        uint256 proposalId = uint256(keccak256(abi.encode(address(this), block.chainid, actionHash, nounce)));
+        uint256 proposalNounce = nounce;
+        uint256 proposalId = uint256(keccak256(abi.encode(address(this), block.chainid, actionHash, proposalNounce)));
+
+        // Consumed before _applyRules makes any external call: a delegate is
+        // arbitrary code called mid-proposal, and a re-entrant proposal minted
+        // under the same nounce would collide with this one's id.
+        nounce = proposalNounce + 1;
+
         VotingParameters memory defaults = IConstitution(constitution).getDefaultVotingParameters();
 
         Proposal storage proposal = proposals[proposalId];
@@ -309,7 +388,7 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         proposal.voteEnd = block.timestamp + defaults.votingPeriod;
         proposal.actionHash = actionHash;
         proposal.descriptionHash = descriptionHash;
-        proposal.nounce = nounce;
+        proposal.nounce = proposalNounce;
         // pinned so this proposal can only ever be judged by the rules it was
         // created under; execute refuses if the constitution has since changed
         proposal.constitution = constitution;
@@ -317,11 +396,22 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         VotingParameters memory strictest;
         uint256 delegateVoteEnd;
         for (uint256 i = 0; i < targets.length; i++) {
-            if (calldatas[i].length == 0) continue; // no selector to key a rule on
+            // No selector to key a specific rule on, but it still reaches the
+            // target's receive/fallback -- so a blanket rule must apply, or
+            // `{to, value, ""}` walks past the veto `to.withdraw()` is subject
+            // to, for the same money and the same destination.
+            if (calldatas[i].length == 0) {
+                uint256 bare =
+                    _applyRules(strictest, proposalId, targets[i], ANY_SELECTOR, targets, values, calldatas, descriptionHash);
+                if (bare > delegateVoteEnd) delegateVoteEnd = bare;
+                continue;
+            }
             bytes4 selector = _selectorOf(calldatas[i]);
             uint256 d = _applyRules(strictest, proposalId, targets[i], selector, targets, values, calldatas, descriptionHash);
             if (d > delegateVoteEnd) delegateVoteEnd = d;
-            if (selector != ANY_SELECTOR) {
+            // The exemption only ever suppresses the blanket rule; the
+            // selector's own voting parameters were merged above and still hold.
+            if (selector != ANY_SELECTOR && !isExempt(targets[i], selector)) {
                 d = _applyRules(strictest, proposalId, targets[i], ANY_SELECTOR, targets, values, calldatas, descriptionHash);
                 if (d > delegateVoteEnd) delegateVoteEnd = d;
             }
@@ -342,8 +432,7 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
             proposal.voteEnd = delegateVoteEnd;
         }
 
-        emit ProposalCreated(proposalId, proposer, targets, values, calldatas, nounce, descriptionHash);
-        nounce++;
+        emit ProposalCreated(proposalId, proposer, targets, values, calldatas, proposalNounce, descriptionHash);
         return proposalId;
     }
 
@@ -369,17 +458,14 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
             strictest.votingPeriod = params.votingPeriod;
         }
 
+        // Every registered delegate is required regardless of authority: the
+        // flag decides who may change the registration, not whether it is
+        // enforced. A veto nobody had to satisfy would not be a veto.
         DelageteGovernace memory delagate = delagateGovernance[target][key];
-        if (delagate.governer != address(0) && delagate.authority == FunctionAuthority.Delegated) {
-            // proposeApproval hands back the delegate's own handle for this
-            // request; reading it tells us when that delegate expects to have
-            // decided. A Governor spoke reports its own voting deadline; an
-            // OwnedDelegate mirrors ours and so reports nothing new, which is
-            // right -- an approver signs whenever, it has no clock.
-            //
-            // Note this reads back into our own partially-written proposal via
-            // the mirror. It is a view call and voteEnd is only provisional at
-            // this point, which the max() above absorbs.
+        if (delagate.governer != address(0) && delagate.governer != address(this)) {
+            // proposeApproval hands back the delegate's handle for this
+            // request, so reading it tells us when that delegate expects to
+            // have decided and our deadline can stretch to cover its clock.
             uint256 childId = IGoverner(delagate.governer).proposeApproval(
                 address(this),
                 proposalId,
@@ -421,7 +507,7 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         uint256[] calldata values,
         bytes[] calldata calldatas,
         bytes32 descriptionHash
-    ) external payable {
+    ) external payable nonReentrant {
         Proposal storage proposal = proposals[proposalId];
         require(proposal.voteStart != 0, "no such proposal");
         require(proposal.nounce == _nounce, "Invalid nounce");

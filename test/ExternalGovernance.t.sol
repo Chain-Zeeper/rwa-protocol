@@ -10,10 +10,7 @@ import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegis
 import {Proposal, VotingParameters} from "../src/governance/interface/IGoverner.sol";
 import {Council} from "../src/governance/constitution/council/council.sol";
 import {ConstitutionRegistry} from "../src/governance/constitution/ConstitutionRegistry.sol";
-import {SafeConstitution} from "../src/governance/constitution/safe/SafeConstitution.sol";
 import {Owned} from "../src/governance/constitution/owned/owned.sol";
-import {OwnedDelegate} from "../src/governance/delegate/OwnedDelegate.sol";
-import {OwnedDelegateFactory} from "../src/governance/delegate/OwnedDelegateFactory.sol";
 
 import {MockSafe} from "./mocks/MockSafe.sol";
 
@@ -34,7 +31,7 @@ contract MockPool is Ownable {
     }
 }
 
-abstract contract SafeGovernanceBase is Test {
+abstract contract ExternalGovernanceBase is Test {
     uint256 constant VOTING_PERIOD = 3 days;
 
     // "two thirds" as a ceiling-rounded bps: 6666 is the largest bps that still
@@ -145,6 +142,33 @@ abstract contract SafeGovernanceBase is Test {
         return Governor(payable(address(new ERC1967Proxy(address(impl), init))));
     }
 
+    // A veto holder is an ordinary Governor whose constitution names the holder.
+    // No adapter: a Governor already implements IGoverner, so it drops straight
+    // into a delegate slot.
+    function _deployVetoSpoke(address holder) internal returns (Governor) {
+        Owned impl = new Owned();
+        Owned c = Owned(
+            address(new ERC1967Proxy(address(impl), abi.encodeCall(Owned.initialize, (holder, VOTING_PERIOD))))
+        );
+        return _deployGovernor(address(c), new DelegateRegistration[](0));
+    }
+
+    // the Safe signing off: one Safe transaction casts the spoke's ballot, and
+    // executing the approval afterwards is permissionless
+    function _safeApprovesVia(Governor spoke, address hub, uint256 hubProposalId) internal {
+        uint256 childId = spoke.approvalProposalId(hub, hubProposalId);
+        require(childId != 0, "spoke was never asked to approve");
+
+        _execFromSafe(address(spoke), abi.encodeCall(Governor.vote, (childId, true)));
+
+        (address[] memory t, uint256[] memory v, bytes[] memory c) =
+            _singleAction(address(spoke), abi.encodeWithSelector(spoke.approveProposal.selector, hub, hubProposalId));
+        spoke.execute(
+            childId, spoke.getProposal(childId).nounce, t, v, c,
+            keccak256(abi.encode("approval", hub, hubProposalId))
+        );
+    }
+
     function _singleAction(address target, bytes memory data)
         internal
         pure
@@ -161,29 +185,23 @@ abstract contract SafeGovernanceBase is Test {
 // ===================================================================
 // 1. A Safe as a delegate: the hub cannot execute without its sign-off
 // ===================================================================
-contract SafeDelegateTest is SafeGovernanceBase {
+contract ExternalVetoHolderTest is ExternalGovernanceBase {
     Governor hub;
+    Governor spoke; // the Safe's veto, expressed as a governor it owns
     MockPool pool;
-    OwnedDelegate delegate;
-    OwnedDelegateFactory factory;
 
     function setUp() public {
         _initActors();
 
-        factory = new OwnedDelegateFactory(address(new OwnedDelegate()));
-
-        // the adapter's address is deterministic in the Safe's, so the hub can
-        // be wired to it in the same breath it is deployed
-        delegate = OwnedDelegate(factory.deploy(address(safe)));
-
+        spoke = _deployVetoSpoke(address(safe));
         pool = new MockPool(address(this));
 
         DelegateRegistration[] memory registrations = new DelegateRegistration[](1);
         registrations[0] = DelegateRegistration({
             target: address(pool),
-            delegate: address(delegate),
+            delegate: address(spoke),
             selector: MockPool.withdrawTo.selector,
-            authority: FunctionAuthority.Delegated
+            authority: FunctionAuthority.Hard
         });
 
         hub = _deployGovernor(address(_deployCouncil(_hubCouncilMembers())), registrations);
@@ -208,30 +226,31 @@ contract SafeDelegateTest is SafeGovernanceBase {
         hub.vote(proposalId, true);
     }
 
-    function test_FactoryAddressIsDeterministicAndBoundToTheSafe() public {
-        assertEq(factory.delegateFor(address(safe)), address(delegate));
-        assertTrue(factory.isDeployed(address(safe)));
-        assertEq(address(delegate.approver()), address(safe));
+    function test_TheSafeIsTheVetoHolderThroughItsSpoke() public {
+        assertEq(Owned(spoke.constitution()).owner(), address(safe));
+        assertTrue(Owned(spoke.constitution()).canVote(address(safe)));
+        assertFalse(Owned(spoke.constitution()).canVote(dave)); // an owner, not the Safe
     }
 
-    function test_ProposingMirrorsAnApprovalRequestOntoTheDelegate() public {
-        (uint256 proposalId,,, bytes[] memory calldatas) = _proposeWithdrawal();
+    function test_ProposingAsksTheSpokeForApproval() public {
+        (uint256 proposalId,,,) = _proposeWithdrawal();
 
-        (address mirroredHub, uint256 mirroredId, bytes32 actionHash,,) = delegate.requests(address(hub), proposalId);
-        assertEq(mirroredHub, address(hub));
-        assertEq(mirroredId, proposalId);
-        assertEq(actionHash, hub.getProposal(proposalId).actionHash);
-        assertGt(uint256(actionHash), 0);
-        assertEq(calldatas.length, 1);
+        uint256 childId = spoke.approvalProposalId(address(hub), proposalId);
+        assertTrue(childId != 0, "the spoke was never asked");
+        assertEq(
+            spoke.getProposal(childId).descriptionHash,
+            keccak256(abi.encode("approval", address(hub), proposalId))
+        );
+        assertEq(hub.delegates(proposalId, 0), address(spoke));
     }
 
-    function test_SafeApprovesByExecutingTheCallItself() public {
+    function test_SafeApprovesThroughItsSpoke() public {
         (uint256 proposalId, address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
             _proposeWithdrawal();
         _voteThrough(proposalId);
 
-        _execFromSafe(address(delegate), abi.encodeCall(OwnedDelegate.approveProposal, (address(hub), proposalId)));
-        assertTrue(delegate.hasApproved(address(hub), proposalId));
+        _safeApprovesVia(spoke, address(hub), proposalId);
+        assertTrue(spoke.hasApproved(address(hub), proposalId));
 
         vm.warp(block.timestamp + VOTING_PERIOD + 1);
         hub.execute(proposalId, 0, targets, values, calldatas, keccak256("withdraw 1 ether"));
@@ -249,87 +268,42 @@ contract SafeDelegateTest is SafeGovernanceBase {
         assertEq(treasury.balance, 0);
     }
 
-    function test_RevertWhen_ApprovalCallerIsNotTheSafe() public {
+    // an individual Safe owner is not the Safe, and the spoke knows it
+    function test_RevertWhen_ASafeOwnerVotesInTheirOwnName() public {
         (uint256 proposalId,,,) = _proposeWithdrawal();
+        uint256 childId = spoke.approvalProposalId(address(hub), proposalId);
 
-        vm.prank(dave); // an owner of the Safe, but not the Safe
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, dave));
-        delegate.approveProposal(address(hub), proposalId);
+        vm.prank(dave);
+        vm.expectRevert("Cannot vote");
+        spoke.vote(childId, true);
 
         vm.prank(outsider);
-        vm.expectRevert(abi.encodeWithSelector(Ownable.OwnableUnauthorizedAccount.selector, outsider));
-        delegate.approveProposal(address(hub), proposalId);
+        vm.expectRevert("Cannot vote");
+        spoke.vote(childId, true);
     }
 
-    // approving an id the hub never mirrored would be signing a blank cheque:
-    // the Safe can only ever attest to actions it has already been shown
-    function test_RevertWhen_ApprovingAProposalThatWasNeverMirrored() public {
-        // even a fully-signed Safe transaction cannot approve an unmirrored id
-        bytes memory data = abi.encodeCall(OwnedDelegate.approveProposal, (address(hub), 12345));
-        bytes32 txHash = safe.getTransactionHash(address(delegate), 0, data, safe.nonce());
-        bytes memory sigs = _safeSignatures(_pks2(davePk, erinPk), txHash);
-
-        vm.prank(relayer);
-        vm.expectRevert("no approval request");
-        safe.execTransaction(address(delegate), 0, data, sigs);
-
-        assertFalse(delegate.hasApproved(address(hub), 12345));
-    }
-
+    // the veto holder can only ever be asked about actions the hub really
+    // proposed -- the same validation an adapter did, native to the governor
     function test_RevertWhen_MirroringActionsThatDoNotMatchTheHubProposal() public {
         (uint256 proposalId,,,) = _proposeWithdrawal();
 
         (address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
             _singleAction(address(pool), abi.encodeCall(MockPool.withdrawTo, (treasury, 9 ether)));
 
-        OwnedDelegate fresh = OwnedDelegate(new OwnedDelegateFactory(address(new OwnedDelegate())).deploy(address(safe)));
+        Governor fresh = _deployVetoSpoke(address(safe));
         vm.expectRevert("actions do not match proposal");
         fresh.proposeApproval(address(hub), proposalId, targets, values, calldatas, keccak256("withdraw 1 ether"));
     }
 
-    function test_ApprovalIsIdempotentAndKeepsItsOriginalTimestamp() public {
-        (uint256 proposalId,,,) = _proposeWithdrawal();
+    function test_ProposeApprovalIsIdempotent() public {
+        (uint256 proposalId, address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
+            _proposeWithdrawal();
 
-        _execFromSafe(address(delegate), abi.encodeCall(OwnedDelegate.approveProposal, (address(hub), proposalId)));
-        (, uint256 firstTimestamp) = delegate.approvals(address(hub), proposalId);
-
-        vm.warp(block.timestamp + 1 hours);
-        _execFromSafe(address(delegate), abi.encodeCall(OwnedDelegate.approveProposal, (address(hub), proposalId)));
-
-        (bool approved, uint256 secondTimestamp) = delegate.approvals(address(hub), proposalId);
-        assertTrue(approved);
-        assertEq(secondTimestamp, firstTimestamp);
-    }
-
-    function test_RevertWhen_DelegateIsAskedToOriginateAProposal() public {
-        (address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
-            _singleAction(address(pool), abi.encodeCall(MockPool.setFeeBps, (100)));
-        vm.expectRevert("OwnedDelegate: cannot originate proposals");
-        delegate.propose(targets, values, calldatas, keccak256("d"));
-    }
-
-    function test_MirrorViewTracksHubTimingAndApprovalState() public {
-        (uint256 proposalId,,,) = _proposeWithdrawal();
-        uint256 requestId = delegate.getRequestId(address(hub), proposalId);
-
-        Proposal memory hubProposal = hub.getProposal(proposalId);
-        Proposal memory mirrored = delegate.getProposal(requestId);
-        assertEq(mirrored.voteEnd, hubProposal.voteEnd);
-        assertEq(mirrored.actionHash, hubProposal.actionHash);
-        assertEq(mirrored.proposer, address(hub));
-        assertEq(mirrored.forVotes, 0);
-        assertFalse(mirrored.executed);
-
-        _execFromSafe(address(delegate), abi.encodeCall(OwnedDelegate.approveProposal, (address(hub), proposalId)));
-        mirrored = delegate.getProposal(requestId);
-        assertEq(mirrored.forVotes, 1);
-        assertTrue(mirrored.executed);
-    }
-
-    function test_UnknownRequestIdReadsAsEmpty() public {
-        Proposal memory mirrored = delegate.getProposal(999);
-        assertEq(mirrored.voteStart, 0);
-        assertEq(mirrored.actionHash, bytes32(0));
+        uint256 first = spoke.approvalProposalId(address(hub), proposalId);
+        uint256 again = spoke.proposeApproval(
+            address(hub), proposalId, targets, values, calldatas, keccak256("withdraw 1 ether")
+        );
+        assertEq(again, first, "asking twice must not mint a second approval proposal");
     }
 
     // an unrelated selector on the same target is untouched by the delegation
@@ -346,204 +320,18 @@ contract SafeDelegateTest is SafeGovernanceBase {
         assertEq(pool.feeBps(), 250);
     }
 }
-
 // ===================================================================
-// 2. A Safe's owner set as the electorate
-// ===================================================================
-contract SafeConstitutionTest is SafeGovernanceBase {
-    SafeConstitution constitution;
-    Governor governor;
-    MockPool pool;
-
-    function setUp() public {
-        _initActors();
-        constitution = _deployConstitution(TWO_THIRDS_BPS, TWO_THIRDS_BPS);
-        governor = _deployGovernor(address(constitution), new DelegateRegistration[](0));
-        pool = new MockPool(address(governor));
-    }
-
-    function _deployConstitution(uint16 quorumBps, uint16 thresholdBps) internal returns (SafeConstitution) {
-        SafeConstitution impl = new SafeConstitution();
-        bytes memory init =
-            abi.encodeCall(SafeConstitution.initialize, (address(safe), quorumBps, thresholdBps, VOTING_PERIOD));
-        return SafeConstitution(address(new ERC1967Proxy(address(impl), init)));
-    }
-
-    function _proposeFee(Governor g, uint256 feeBps, address proposer)
-        internal
-        returns (uint256 proposalId, address[] memory targets, uint256[] memory values, bytes[] memory calldatas)
-    {
-        (targets, values, calldatas) = _singleAction(address(pool), abi.encodeCall(MockPool.setFeeBps, (feeBps)));
-        vm.prank(proposer);
-        proposalId = g.propose(targets, values, calldatas, keccak256("set fee"));
-    }
-
-    function test_ElectorateIsReadOffTheSafe() public {
-        assertEq(constitution.name(), "SafeConstitution");
-        assertEq(constitution.totalOwners(), 3);
-        assertTrue(constitution.canPropose(dave));
-        assertTrue(constitution.canVote(frank));
-        assertFalse(constitution.canVote(outsider));
-        assertFalse(constitution.canPropose(outsider));
-    }
-
-    function test_OwnerCarriesOneVoteAndTheSafeCarriesItsThreshold() public {
-        assertEq(constitution.getVotingPower(dave), 1);
-        assertEq(constitution.getVotingPower(address(safe)), 2);
-        assertEq(constitution.getVotingPower(outsider), 0);
-    }
-
-    function test_TwoOfThreeOwnersCanPassAProposal() public {
-        (uint256 proposalId, address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
-            _proposeFee(governor, 300, dave);
-
-        vm.prank(dave);
-        governor.vote(proposalId, true);
-        vm.prank(erin);
-        governor.vote(proposalId, true);
-
-        vm.warp(block.timestamp + VOTING_PERIOD + 1);
-        governor.execute(proposalId, 0, targets, values, calldatas, keccak256("set fee"));
-        assertEq(pool.feeBps(), 300);
-    }
-
-    // a Safe transaction has already cleared the threshold on-chain, so the
-    // Safe voting as itself is sufficient on its own
-    function test_SafeVotingAsItselfCarriesTheWholeThreshold() public {
-        (uint256 proposalId, address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
-            _proposeFee(governor, 400, dave);
-
-        _execFromSafe(address(governor), abi.encodeCall(Governor.vote, (proposalId, true)));
-        assertEq(governor.getProposal(proposalId).forVotes, 2);
-
-        vm.warp(block.timestamp + VOTING_PERIOD + 1);
-        governor.execute(proposalId, 0, targets, values, calldatas, keccak256("set fee"));
-        assertEq(pool.feeBps(), 400);
-    }
-
-    function test_SafeCanProposeAsItself() public {
-        (address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
-            _singleAction(address(pool), abi.encodeCall(MockPool.setFeeBps, (150)));
-
-        _execFromSafe(
-            address(governor),
-            abi.encodeCall(Governor.propose, (targets, values, calldatas, keccak256("safe proposes")))
-        );
-
-        bytes32 actionHash = keccak256(abi.encode(targets, values, calldatas, keccak256("safe proposes")));
-        uint256 proposalId = uint256(keccak256(abi.encode(address(governor), block.chainid, actionHash, uint256(0))));
-        assertEq(governor.getProposal(proposalId).proposer, address(safe));
-    }
-
-    function test_RevertWhen_NonOwnerVotesOrProposes() public {
-        (uint256 proposalId,,,) = _proposeFee(governor, 300, dave);
-
-        vm.prank(outsider);
-        vm.expectRevert("Cannot vote");
-        governor.vote(proposalId, true);
-
-        (address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
-            _singleAction(address(pool), abi.encodeCall(MockPool.setFeeBps, (1)));
-        vm.prank(outsider);
-        vm.expectRevert("Proposer not eligible");
-        governor.propose(targets, values, calldatas, keccak256("x"));
-    }
-
-    // 3333 bps of 3 owners rounds to 1, but the Safe's own 2-of-3 threshold is
-    // a floor: governance here can be stricter than the multisig, never looser
-    function test_SafeThresholdIsAFloorOnTheExecuteThreshold() public {
-        SafeConstitution loose = _deployConstitution(3333, 3333);
-        assertEq(loose.getQuorum(3333), 1);
-        assertEq(loose.getExecuteThreshold(3333), 2); // not 1
-
-        Governor g = _deployGovernor(address(loose), new DelegateRegistration[](0));
-        pool = new MockPool(address(g));
-
-        (uint256 proposalId, address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
-            _proposeFee(g, 500, dave);
-
-        vm.prank(dave);
-        g.vote(proposalId, true);
-
-        vm.warp(block.timestamp + VOTING_PERIOD + 1);
-        vm.expectRevert("Proposal did not pass");
-        g.execute(proposalId, 0, targets, values, calldatas, keccak256("set fee"));
-    }
-
-    // The documented cost of reading the owner set live instead of
-    // checkpointing it: adding an owner mid-vote raises the bar retroactively.
-    function test_AddingAnOwnerMidVoteRaisesTheBar() public {
-        (uint256 proposalId, address[] memory targets, uint256[] memory values, bytes[] memory calldatas) =
-            _proposeFee(governor, 600, dave);
-
-        vm.prank(dave);
-        governor.vote(proposalId, true);
-        vm.prank(erin);
-        governor.vote(proposalId, true);
-        assertTrue(constitution.hasPassed(address(governor), proposalId)); // 2 of 3
-
-        safe.addOwnerWithThreshold(makeAddr("grace"), 2);
-        assertEq(constitution.getExecuteThreshold(TWO_THIRDS_BPS), 3); // 2 of 4 no longer enough
-        assertFalse(constitution.hasPassed(address(governor), proposalId));
-
-        vm.warp(block.timestamp + VOTING_PERIOD + 1);
-        vm.expectRevert("Proposal did not pass");
-        governor.execute(proposalId, 0, targets, values, calldatas, keccak256("set fee"));
-    }
-
-    function test_OnlyTheSafeCanRetuneDefaultVotingParameters() public {
-        vm.prank(dave);
-        vm.expectRevert("only the safe");
-        constitution.setDefaultVotingParameters(5000, 5000, 1 days);
-
-        _execFromSafe(
-            address(constitution),
-            abi.encodeCall(SafeConstitution.setDefaultVotingParameters, (5000, 5000, 1 days))
-        );
-        VotingParameters memory params = constitution.getDefaultVotingParameters();
-        assertEq(params.quorumBps, 5000);
-        assertEq(params.votingPeriod, 1 days);
-    }
-
-    function test_DeployableThroughTheConstitutionRegistry() public {
-        ConstitutionRegistry registry = new ConstitutionRegistry(address(this));
-        registry.registerConstitution(7, address(new SafeConstitution()));
-
-        address instance = registry.deployConstitution(
-            7,
-            abi.encodeCall(
-                SafeConstitution.initialize, (address(safe), TWO_THIRDS_BPS, TWO_THIRDS_BPS, VOTING_PERIOD)
-            )
-        );
-
-        // the initializer ran with the registry as msg.sender, yet control sits
-        // with the Safe, because the Safe is a parameter not a caller
-        assertEq(address(SafeConstitution(instance).safe()), address(safe));
-        vm.prank(address(registry));
-        vm.expectRevert("only the safe");
-        SafeConstitution(instance).setDefaultVotingParameters(1, 1, 1);
-    }
-
-    function test_RevertWhen_InitializedWithANonContractSafe() public {
-        SafeConstitution impl = new SafeConstitution();
-        bytes memory init =
-            abi.encodeCall(SafeConstitution.initialize, (outsider, TWO_THIRDS_BPS, TWO_THIRDS_BPS, VOTING_PERIOD));
-        vm.expectRevert("safe is not a contract");
-        new ERC1967Proxy(address(impl), init);
-    }
-}
-
-// ===================================================================
-// A Safe as the owner of an Owned constitution
+// An external governance protocol as the owner
 //
-// The other way to put a Safe in charge, and the simpler one: rather than
-// SafeConstitution reading the owner set, `Owned` just names the Safe as its
-// single owner. The Safe executes propose, msg.sender is the Safe, the
-// constitution says that settles it, and the action runs -- one Safe
-// transaction end to end. Worth its own coverage because every other Owned test
-// uses an EOA owner, and a contract owner exercises a different path.
+// How any outside system takes charge: `Owned` names it as the single owner, it
+// executes propose, msg.sender is that system, the constitution says that
+// settles it, and the action runs. A Gnosis Safe stands in for the general case
+// here because it settles its own consent before calling -- which is the only
+// thing the protocol requires of it, and is why no Safe-specific code exists.
+// Worth its own coverage because every other Owned test uses an EOA owner, and
+// a contract owner exercises a different path.
 // ===================================================================
-contract SafeAsOwnedOwnerTest is SafeGovernanceBase {
+contract ExternalOwnerTest is ExternalGovernanceBase {
     Owned constitution;
     Governor governor;
     MockPool pool;
@@ -656,8 +444,7 @@ contract SafeAsOwnedOwnerTest is SafeGovernanceBase {
     // a Safe owner is still subject to a delegated veto
     function test_DelegatedSelectorStillDefersForASafeOwner() public {
         address vetoHolder = makeAddr("vetoHolder");
-        OwnedDelegateFactory factory = new OwnedDelegateFactory(address(new OwnedDelegate()));
-        OwnedDelegate delegate = OwnedDelegate(factory.deploy(vetoHolder));
+        Governor delegate = _deployVetoSpoke(vetoHolder);
 
         MockPool gated = new MockPool(address(this));
         DelegateRegistration[] memory registrations = new DelegateRegistration[](1);
@@ -665,7 +452,7 @@ contract SafeAsOwnedOwnerTest is SafeGovernanceBase {
             target: address(gated),
             delegate: address(delegate),
             selector: MockPool.withdrawTo.selector,
-            authority: FunctionAuthority.Delegated
+            authority: FunctionAuthority.Hard
         });
 
         Owned c = _deployOwnedFor(address(safe));
@@ -687,8 +474,16 @@ contract SafeAsOwnedOwnerTest is SafeGovernanceBase {
         assertFalse(g.getProposal(proposalId).executed);
         assertEq(treasury.balance, 0);
 
+        uint256 childId = delegate.approvalProposalId(address(g), proposalId);
         vm.prank(vetoHolder);
-        delegate.approveProposal(address(g), proposalId);
+        delegate.vote(childId, true);
+        (address[] memory at, uint256[] memory av, bytes[] memory ac) = _singleAction(
+            address(delegate), abi.encodeWithSelector(delegate.approveProposal.selector, address(g), proposalId)
+        );
+        delegate.execute(
+            childId, delegate.getProposal(childId).nounce, at, av, ac,
+            keccak256(abi.encode("approval", address(g), proposalId))
+        );
 
         g.execute(proposalId, 0, targets, values, calldatas, descriptionHash);
         assertEq(treasury.balance, 1 ether);

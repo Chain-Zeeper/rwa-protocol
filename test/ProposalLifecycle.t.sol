@@ -276,7 +276,7 @@ contract DelegateDeadlineTest is LifecycleBase {
             target: address(pool),
             delegate: address(spoke),
             selector: LifecyclePool.withdrawTo.selector,
-            authority: FunctionAuthority.Delegated
+            authority: FunctionAuthority.Hard
         });
 
         hub = _deployGovernor(address(_deployCouncil(hubMembers, HUB_PERIOD)), registrations);

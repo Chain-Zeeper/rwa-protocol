@@ -8,56 +8,34 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {IGoverner, Proposal, VotingParameters} from "../../interface/IGoverner.sol";
 import {IConstitution} from "../interface/IConstitution.sol";
 
-// The degenerate constitution: a single address decides everything.
+// The degenerate constitution: a single address decides everything. Owner may
+// be an EOA, a Safe, or another governor.
 //
-// This is what makes an "owned" governor possible without bolting an owner
-// role onto Governor itself. Ownership lives here, in the pluggable authority
-// layer, which buys three things:
-//
-//   * progressive decentralisation is a constitution swap, not a migration.
-//     changeConstitutionalStrategy moves an owned governor to a Council, a
-//     Safe or a token DAO while the governor's address -- and therefore every
-//     contract holding `owner == governor`, plus the treasury -- stays put;
-//   * the owner still acts through propose/execute, so every action leaves a
-//     ProposalCreated trail bound to an actionHash, and delegate approvals
-//     still apply to it. An owner can be vetoed on a delegated selector, which
-//     is something plain Ownable cannot express;
-//   * there is no permanent owner field left behind on the governor to serve
-//     as a backdoor once governance has moved on.
-//
-// The cost over `onlyOwner` is gas: an owned action is still a proposal.
-// Governor.propose collapses proposing, voting and executing into one call
-// whenever the owner's ballot alone settles the outcome.
-//
-// `owner` may be an EOA, a Safe, or another governor. A 1-of-1 Safe with
-// SafeConstitution is equivalent and gives you owner rotation for free; this
-// exists so a deployment that just wants a plain admin address does not have
-// to stand up a Safe.
+// Keeping ownership here rather than as an owner role on Governor means
+// decentralising later is a constitution swap, not a migration -- the
+// governor's address never moves, so every contract holding `owner ==
+// governor` is untouched -- and an owner still acts through propose/execute,
+// so delegated vetoes apply to it. Plain Ownable can express neither.
 contract Owned is IConstitution, Ownable2Step, Initializable {
-    // Only ever a deadline for the owner's own convenience -- canExecuteEarly
-    // below means the owner never actually serves it. It matters only if the
-    // constitution is later swapped for one with a real electorate, or if a
-    // proposal is left to sit.
+    // The owner never serves this deadline (see canExecuteEarly). It matters
+    // only if the constitution is later swapped for a real electorate.
     uint256 public votingPeriod;
 
     event VotingPeriodChanged(uint256 oldPeriod, uint256 newPeriod);
 
-    // Ownable's constructor only ever runs against this implementation, never
-    // against a clone, so the address it names here is thrown away; initialize
-    // sets the real owner. Same pattern Council uses.
+    // Ownable's constructor runs only against this implementation, never a
+    // clone, so the owner it names here is thrown away; initialize sets the
+    // real one.
     constructor() Ownable(msg.sender) {
         _disableInitializers();
     }
 
-    // owner is a parameter rather than msg.sender because the initializer runs
-    // with ConstitutionRegistry as the caller
+    // owner is a parameter, not msg.sender: the initializer runs with
+    // ConstitutionRegistry as the caller
     function initialize(address _owner, uint256 _votingPeriod) external initializer {
         require(_owner != address(0), "zero owner");
-        // A zero period leaves voteEnd == voteStart, which breaks two things:
-        // a vote cast in any later block reverts as closed, and a delegate's
-        // `block.timestamp < hubProposal.voteEnd` check fails at propose time.
-        // The owner never waits for this deadline anyway (canExecuteEarly), so
-        // make it generous -- a year is a sensible default.
+        // zero leaves voteEnd == voteStart: later ballots revert as closed, and
+        // every delegated proposal fails the delegate's voteEnd check
         require(_votingPeriod > 0, "zero voting period");
         _transferOwnership(_owner);
         votingPeriod = _votingPeriod;
@@ -83,40 +61,31 @@ contract Owned is IConstitution, Ownable2Step, Initializable {
         return getVotingPower(voter);
     }
 
-    // 100% quorum and threshold of a one-address electorate is one vote, which
-    // is the point. A per-selector override cannot raise the bar above this,
-    // since any bps of a single voter ceiling-rounds to 1.
+    // any bps of a one-address electorate ceiling-rounds to one vote, so no
+    // per-selector override can raise the bar above this
     function getDefaultVotingParameters() external view returns (VotingParameters memory) {
         return VotingParameters(10000, 10000, votingPeriod);
     }
 
-    // With a one-address electorate there is no one else to hear from, so the
-    // owner filing a proposal already settles it -- an explicit ballot is
-    // accepted too, but never required. This is what lets Governor.propose
-    // execute an owned action in the same call without casting a vote on the
-    // proposer's behalf.
+    // Nobody else to hear from, so the owner filing a proposal settles it. A
+    // ballot is accepted but never required -- which is what lets
+    // Governor.propose execute in one call without forging a vote.
     function hasPassed(address governor, uint256 proposal) public view returns (bool) {
         Proposal memory p = IGoverner(governor).getProposal(proposal);
         return p.proposer == owner() || p.forVotes >= 1;
     }
 
 
-    // A passed proposal stays executable for this long after voteEnd; past it
-    // the authorisation lapses instead of standing indefinitely.
+    // past this, a passed-but-abandoned proposal lapses rather than standing
+    // as a live authorisation forever
     function executionGrace() external pure returns (uint256) {
         return 30 days;
     }
 
-    // The owner voting for its own proposal settles it outright: there is no
-    // one else to hear from. So an owned governor executes in the same
-    // transaction it proposes in.
-    //
-    // Consequence worth being deliberate about: a votingPeriod override
-    // registered on a target/selector as a deliberate delay does NOT hold the
-    // owner back. If you want a mandatory delay on something -- and
-    // changeConstitutionalStrategy is the strongest candidate, since whoever
-    // holds the constitution can install one granting themselves everything --
-    // gate it with a delegate, or gate it here with a timestamp check.
+    // Worth being deliberate about: a votingPeriod override registered as a
+    // deliberate delay does NOT hold the owner back. For a mandatory delay --
+    // changeConstitutionalStrategy being the strongest candidate -- gate it
+    // with a delegate, or add a timestamp check here.
     function canExecuteEarly(address governor, uint256 proposal) external view returns (bool) {
         return hasPassed(governor, proposal);
     }
@@ -130,13 +99,12 @@ contract Owned is IConstitution, Ownable2Step, Initializable {
         votingPeriod = _votingPeriod;
     }
 
-    // transferOwnership/acceptOwnership come from Ownable2Step: two-step, so a
-    // typo cannot strand the governor with an unreachable owner.
+    // transferOwnership/acceptOwnership come from Ownable2Step, so a typo
+    // cannot strand the governor with an unreachable owner.
 
+    // An owned governor with no owner could never execute anything again --
+    // including the proposal that would install a new constitution.
     function renounceOwnership() public pure override {
-        // deliberately not supported: an owned governor with no owner can never
-        // execute anything again, including the proposal that would swap in a
-        // new constitution. Hand it to a Safe or a Council instead.
         revert("use transferOwnership");
     }
 }
