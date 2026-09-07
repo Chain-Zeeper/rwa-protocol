@@ -1,17 +1,21 @@
 # RWA Protocol — Governance
 
-Governance for real-world-asset vaults, built around one idea: **every proposal has to clear two independent gates, and neither can overrule the other.**
+Governance for real-world-asset vaults, built around the idea: **every proposal has to clear multiple independent gates, and one cant overrule the others.**
 
-One gate decides whether a proposal *passed*. The other decides whether it was ever *allowed*. Separating them is what lets a single `Governor` serve a solo admin, a multisig, a committee and a token DAO without changing a line, while still letting an outside party hold a veto that governance cannot vote away.
+It lets a single `Governor` serve a solo admin, a multisig, a committee or a token DAO without changing a line.
+
+It also lets them serve **at the same time**. A veto holder is itself a `Governor` with its own constitution, so different governance schemes can govern the same asset together — each keeping its own rules, none able to overrule another. See [Governing together](#governing-together).
 
 ---
 
 ## Contents
 
 - [The two gates](#the-two-gates)
+- [What this enables](#what-this-enables)
 - [Constitutions](#constitutions)
 - [Proposal lifecycle](#proposal-lifecycle)
 - [Delegation and vetoes](#delegation-and-vetoes)
+- [Governing together](#governing-together)
 - [Rule resolution](#rule-resolution)
 - [The execute gate](#the-execute-gate)
 - [Deployment](#deployment)
@@ -46,6 +50,20 @@ The **delegates** are vetoes, registered per target contract *and* per function 
 The delegates are themselves Governor contracts, each with its own constitution.
 
 A constitution that says a proposal passed cannot override a delegate that withheld approval, and an approving delegate cannot make a failed proposal pass.
+
+---
+
+## What this enables
+
+
+**A veto that governance cannot vote away.** A trustee, transfer agent or regulator can hold a `Hard` veto over named functions. Token holders may pass whatever they like — the funds do not move without the sign-off, and nothing in the hub's own governance can revoke it.
+
+**Authority split by function, not by contract.** Because vetoes are keyed on `(target, selector)`, the issuer can gate redemptions while a committee gates fees and a compliance officer gates everything, all on one vault. No proxy-per-role, no duplicated contracts.
+
+**Counterparties govern through what they already run.** An institution participates using its own multisig, DAO or custody workflow. There is nothing to integrate and no framework to adopt — see [External governance protocols](#external-governance-protocols).
+
+
+**Blocking power without spending power.** A veto holder can only ever refuse. An emergency key can hold a blanket veto over a vault while having no ability to move a single token out of it.
 
 ---
 
@@ -157,6 +175,31 @@ Both levels are real vetoes — the delegate must approve either way. What diffe
 `Soft` is the zero value, so an omitted `authority` yields an *enforced but revocable* veto — the safe default. A `Hard` veto is a permanent, unrecoverable commitment: if its holder disappears, that target+selector is frozen forever. Right for a regulator or trustee; wrong for almost everything else.
 
 The hub's lockout on `Hard` is the mechanism, not an oversight. A hub able to reassign a live veto would reassign it to a puppet.
+
+### Governing together
+
+A veto holder is a `Governor` with a constitution of its own, so **the parties gating one action need not share a governance model.** Each keeps its own rules, its own electorate and its own clock; the hub only ever asks `hasApproved`.
+
+```mermaid
+flowchart TD
+    subgraph HUB["Hub — token holders govern the vault"]
+        G["Governor<br/><i>constitution: token DAO</i>"]
+    end
+
+    G -->|"withdrawTo"| A["Governor<br/><i>constitution: Owned(issuer multisig)</i>"]
+    G -->|"setFeeBps"| B["Governor<br/><i>constitution: Council of 5</i>"]
+    G -->|"ANY_SELECTOR"| C["Governor<br/><i>constitution: Owned(compliance EOA)</i>"]
+
+    A --> V["Vault"]
+    B --> V
+    C --> V
+```
+
+Reading that: the token holders decide *what* the vault does, but moving funds also needs the issuer's multisig, changing fees also needs a five-member committee, and **everything** also needs the compliance officer. Four schemes — a token DAO, a multisig, a committee and a single key — cooperating on one contract, with no shared framework and no common quorum.
+
+This works because the interface between them is deliberately thin. A delegate is asked one question and answers one bit. It never learns how the hub reached its decision, and the hub never learns how the delegate reached its own — a council spoke runs a five-day vote, a multisig spoke clears a threshold, an owned spoke settles the moment its owner files, and to the hub all three are `hasApproved` returning true.
+
+The composition is also **asymmetric on purpose**. Each spoke gates only the selectors it was registered for, so authority is scoped rather than shared: the compliance officer holds a blanket veto but cannot spend, the issuer can block withdrawals but has no say on fees, and the token holders can act alone on anything nobody gated.
 
 ### Deadline stretching
 
