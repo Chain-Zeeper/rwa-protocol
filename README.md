@@ -353,7 +353,7 @@ Two consequences worth planning around:
 
 ## Known limitations
 
-- **A selector-specific veto is escapable.** Vetoes are keyed on `(target, selector)`, so one on `withdrawTo` leaves `transferOwnership` open — governance can move the asset to an ungated governor and withdraw from there. **Only a wildcard veto is actually hard.** Register hard vetoes on `ANY_SELECTOR`.
+- **A selector-specific veto is escapable.** Vetoes are keyed on `(target, selector)`, so one on `withdrawTo` leaves `transferOwnership` open — governance can move the asset to an ungated governor and withdraw from there. **Only a wildcard veto is actually hard.** Register hard vetoes on `ANY_SELECTOR`. Must be initialized safely with wildcard registration if required.
 - **Installing a veto is not retroactive.** `delegates[proposalId]` is snapshotted at proposal time, so proposals already in flight are unaffected. Audit open proposals when adding one.
 - **A `Hard` veto whose holder disappears freezes that slot permanently.** That is the point of `Hard`, but it means handing one out is irreversible.
 
