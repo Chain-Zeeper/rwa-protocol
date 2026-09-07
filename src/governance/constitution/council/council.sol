@@ -121,6 +121,19 @@ contract Council is IConstitution, Ownable,Initializable {
         return p.forVotes >= getExecuteThreshold(p.thresholdBps, p.voteStart) && totalVotes >= getQuorum(p.quorumBps, p.voteStart);
     }
 
+
+    // A passed proposal stays executable for this long after voteEnd; past it
+    // the authorisation lapses instead of standing indefinitely.
+    function executionGrace() external pure returns (uint256) {
+        return 30 days;
+    }
+
+    // A council votes over a period by design: members are people who need
+    // time to turn out, so the deadline is the point.
+    function canExecuteEarly(address, uint256) external pure returns (bool){
+        return false;
+    }
+
     // default returns false until proposer eligibility is designed
     function canPropose(address proposer) external view returns (bool){
         return isCouncil[proposer];

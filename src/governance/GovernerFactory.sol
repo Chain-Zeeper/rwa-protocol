@@ -4,7 +4,7 @@ pragma solidity ^0.8.13;
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
 import {IGovernerFactory} from "./interface/IGovernerFactory.sol";
-import {IConstitutionRegistry} from "./VotingStrategies/interface/IConstitutionRegistry.sol";
+import {IConstitutionRegistry} from "./constitution/interface/IConstitutionRegistry.sol";
 import {Governor, DelegateRegistration, VotingParametersRegistration} from "./Governer.sol";
 
 // Registry + EIP-1167 clone factory for Governor implementations. Deploys a

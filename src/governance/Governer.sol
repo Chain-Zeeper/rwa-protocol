@@ -6,7 +6,7 @@ import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol"
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "./interface/IGoverner.sol";
-import {IConstitution} from "./VotingStrategies/interface/IConstitution.sol";
+import {IConstitution} from "./constitution/interface/IConstitution.sol";
 
 
 enum FunctionAuthority {
@@ -81,6 +81,12 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
     );
 
     event ProposalApproved(address indexed hub, uint256 indexed hubProposalId, uint256 timestamp);
+
+    // relayed ballots have no msg.sender trail, so the voter is only
+    // recoverable from an event
+    event VoteCast(uint256 indexed proposalId, address indexed voter, bool support, uint256 weight);
+
+    event ProposalExecuted(uint256 indexed proposalId, address indexed executor);
 
     // ---------------------------------------------------------------
     // constitutional strategy
@@ -257,11 +263,33 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         uint256[] calldata values,
         bytes[] calldata calldatas,
         bytes32 descriptionHash
-    ) external returns (uint256) {
+    ) external returns (uint256 proposalId) {
         require(targets.length == values.length && targets.length == calldatas.length, "Mismatched proposal parameters");
         address proposer = _msgSender();
         require(IConstitution(constitution).canPropose(proposer), "Proposer not eligible");
-        return _propose(proposer, targets, values, calldatas, descriptionHash);
+
+        proposalId = _propose(proposer, targets, values, calldatas, descriptionHash);
+
+        // Some electorates are settled the moment the proposal exists: a
+        // constitution whose authority-holder is the proposer has nobody left
+        // to hear from, and says so through hasPassed. Run it now -- that is
+        // what makes an owned governor behave like Ownable from a single call,
+        // with a full proposal trail behind it.
+        //
+        // Deliberately does NOT cast a ballot on the proposer's behalf.
+        // Proposing and supporting are separate acts for a real electorate, and
+        // conflating them would start every council proposal one vote up.
+        //
+        // Anything not yet settled simply stands open and follows the normal
+        // path: an electorate that still has to turn out, or a delegated
+        // selector whose veto-holder was only just notified -- in this very
+        // transaction, so it cannot possibly have approved yet. Those are left
+        // for execute() to pick up, never reverted, because reverting here
+        // would roll back _propose and with it the proposeApproval calls that
+        // notify the delegates.
+        if (canExecuteNow(proposalId)) {
+            _runActions(proposalId, targets, values, calldatas);
+        }
     }
 
     function _propose(
@@ -282,14 +310,20 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         proposal.actionHash = actionHash;
         proposal.descriptionHash = descriptionHash;
         proposal.nounce = nounce;
+        // pinned so this proposal can only ever be judged by the rules it was
+        // created under; execute refuses if the constitution has since changed
+        proposal.constitution = constitution;
 
         VotingParameters memory strictest;
+        uint256 delegateVoteEnd;
         for (uint256 i = 0; i < targets.length; i++) {
             if (calldatas[i].length == 0) continue; // no selector to key a rule on
             bytes4 selector = _selectorOf(calldatas[i]);
-            _applyRules(strictest, proposalId, targets[i], selector, targets, values, calldatas, descriptionHash);
+            uint256 d = _applyRules(strictest, proposalId, targets[i], selector, targets, values, calldatas, descriptionHash);
+            if (d > delegateVoteEnd) delegateVoteEnd = d;
             if (selector != ANY_SELECTOR) {
-                _applyRules(strictest, proposalId, targets[i], ANY_SELECTOR, targets, values, calldatas, descriptionHash);
+                d = _applyRules(strictest, proposalId, targets[i], ANY_SELECTOR, targets, values, calldatas, descriptionHash);
+                if (d > delegateVoteEnd) delegateVoteEnd = d;
             }
         }
 
@@ -300,6 +334,13 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         proposal.quorumBps = strictest.quorumBps;
         proposal.thresholdBps = strictest.thresholdBps;
         proposal.voteEnd = proposal.voteStart + strictest.votingPeriod;
+
+        // A spoke resolves on its own constitution's clock, which may run past
+        // ours. Stretch to cover the slowest of them, so a proposal cannot
+        // expire while it is still legitimately waiting on a delegate.
+        if (delegateVoteEnd > proposal.voteEnd) {
+            proposal.voteEnd = delegateVoteEnd;
+        }
 
         emit ProposalCreated(proposalId, proposer, targets, values, calldatas, nounce, descriptionHash);
         nounce++;
@@ -316,7 +357,7 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         uint256[] memory values,
         bytes[] memory calldatas,
         bytes32 descriptionHash
-    ) internal {
+    ) internal returns (uint256 delegateVoteEnd) {
         VotingParameters memory params = votingParameters[target][key];
         if (params.quorumBps > strictest.quorumBps) {
             strictest.quorumBps = params.quorumBps;
@@ -330,7 +371,16 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
 
         DelageteGovernace memory delagate = delagateGovernance[target][key];
         if (delagate.governer != address(0) && delagate.authority == FunctionAuthority.Delegated) {
-            IGoverner(delagate.governer).proposeApproval(
+            // proposeApproval hands back the delegate's own handle for this
+            // request; reading it tells us when that delegate expects to have
+            // decided. A Governor spoke reports its own voting deadline; an
+            // OwnedDelegate mirrors ours and so reports nothing new, which is
+            // right -- an approver signs whenever, it has no clock.
+            //
+            // Note this reads back into our own partially-written proposal via
+            // the mirror. It is a view call and voteEnd is only provisional at
+            // this point, which the max() above absorbs.
+            uint256 childId = IGoverner(delagate.governer).proposeApproval(
                 address(this),
                 proposalId,
                 targets,
@@ -339,6 +389,7 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
                 descriptionHash
             );
             _addDelegate(proposalId, delagate.governer);
+            delegateVoteEnd = IGoverner(delagate.governer).getProposal(childId).voteEnd;
         }
     }
 
@@ -375,11 +426,21 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
         require(proposal.voteStart != 0, "no such proposal");
         require(proposal.nounce == _nounce, "Invalid nounce");
         require(!proposal.executed, "Proposal already executed");
-        require(block.timestamp > proposal.voteEnd, "Voting still open");
+        require(proposal.constitution == constitution, "constitution changed");
+        require(!_isExpired(proposal), "proposal expired");
 
         // the actions passed in must be the ones that were proposed
         bytes32 actionHash = keccak256(abi.encode(targets, values, calldatas, descriptionHash));
         require(actionHash == proposal.actionHash, "actions do not match proposal");
+
+        // The deadline is the default, but a constitution that can already tell
+        // the outcome is settled may waive it -- an owner or a Safe has no one
+        // left to hear from. Delegate approvals below are checked regardless.
+        require(
+            block.timestamp > proposal.voteEnd
+                || IConstitution(constitution).canExecuteEarly(address(this), proposalId),
+            "Voting still open"
+        );
 
         // every delegate that was required at proposal time must have approved
         address[] storage required = delegates[proposalId];
@@ -390,13 +451,66 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
             );
         }
 
-        bool passed = IConstitution(constitution).hasPassed(address(this), proposalId); // TODO: not implemented yet
-        require(passed, "Proposal did not pass");
+        require(IConstitution(constitution).hasPassed(address(this), proposalId), "Proposal did not pass");
 
-        proposal.executed = true;
+        _runActions(proposalId, targets, values, calldatas);
+    }
+
+    // The same predicate execute() enforces, in a form that answers instead of
+    // reverting -- used by propose() to decide whether the proposal it just
+    // created is already settled, and by any client deciding whether an action
+    // will land in one transaction or need a second.
+    function canExecuteNow(uint256 proposalId) public view returns (bool) {
+        Proposal storage proposal = proposals[proposalId];
+        if (proposal.voteStart == 0 || proposal.executed) return false;
+        if (proposal.constitution != constitution) return false;
+        if (_isExpired(proposal)) return false;
+
+        address[] storage required = delegates[proposalId];
+        for (uint256 i = 0; i < required.length; i++) {
+            if (!IGoverner(required[i]).hasApproved(address(this), proposalId)) return false;
+        }
+
+        if (
+            block.timestamp <= proposal.voteEnd
+                && !IConstitution(constitution).canExecuteEarly(address(this), proposalId)
+        ) {
+            return false;
+        }
+
+        return IConstitution(constitution).hasPassed(address(this), proposalId);
+    }
+
+    // A passed proposal that nobody executed should lapse, not sit as a
+    // standing authorisation forever. The grace period comes from the
+    // constitution, which is pinned on the proposal, so it cannot be relaxed
+    // out from under an existing one by swapping strategies.
+    function _isExpired(Proposal storage proposal) internal view returns (bool) {
+        uint256 grace = IConstitution(constitution).executionGrace();
+        if (grace == type(uint256).max) return false; // explicit opt-out
+
+        uint256 deadline;
+        unchecked {
+            deadline = proposal.voteEnd + grace;
+        }
+        if (deadline < proposal.voteEnd) return false; // overflowed: never expires
+
+        return block.timestamp > deadline;
+    }
+
+    function _runActions(
+        uint256 proposalId,
+        address[] calldata targets,
+        uint256[] calldata values,
+        bytes[] calldata calldatas
+    ) internal {
+        // set before the calls out, so a target cannot re-enter into a second
+        // execution of the same proposal
+        proposals[proposalId].executed = true;
         for (uint256 i = 0; i < targets.length; i++) {
             _execute(targets[i], values[i], calldatas[i]);
         }
+        emit ProposalExecuted(proposalId, _msgSender());
     }
 
     function _execute(address target, uint256 value, bytes memory data) internal {
@@ -446,17 +560,19 @@ contract Governor is IGoverner, Initializable, ERC2771Context {
     // ---------------------------------------------------------------
 
     function vote(uint256 proposalId, bool support) external {
-        address voter = _msgSender();
+        _castVote(proposalId, _msgSender(), support);
+    }
+
+    function _castVote(uint256 proposalId, address voter, bool support) internal {
         Proposal storage proposal = proposals[proposalId];
         require(block.timestamp >= proposal.voteStart && block.timestamp <= proposal.voteEnd, "Voting is closed");
         require(!hasVoted[proposalId][voter], "Already voted");
         require(IConstitution(constitution).canVote(voter), "Cannot vote");
         hasVoted[proposalId][voter] = true;
-        IConstitution strategy = IConstitution(constitution);
-        uint256 weight = strategy.getVotes(address(this), proposalId, voter);
+        uint256 weight = IConstitution(constitution).getVotes(address(this), proposalId, voter);
         proposal.forVotes += support ? weight : 0;
         proposal.againstVotes += support ? 0 : weight;
-
+        emit VoteCast(proposalId, voter, support, weight);
     }
 
     modifier onlyGovernance() {

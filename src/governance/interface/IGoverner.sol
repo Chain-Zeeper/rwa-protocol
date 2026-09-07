@@ -13,6 +13,10 @@ struct Proposal {
     bytes32 descriptionHash;
     uint256 nounce;
     bool executed;
+    // the constitution in force when this proposal was created. Execution
+    // requires it to still be the governor's constitution, so authorisation
+    // banked under one set of rules can never be spent under another.
+    address constitution;
 }
 
 // shared shape for both a governor's per-target/selector overrides and a

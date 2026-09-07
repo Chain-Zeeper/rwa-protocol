@@ -7,10 +7,10 @@ import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-import {ConstitutionRegistry} from "../src/governance/VotingStrategies/ConstitutionRegistry.sol";
-import {IConstitutionRegistry} from "../src/governance/VotingStrategies/interface/IConstitutionRegistry.sol";
-import {Council} from "../src/governance/VotingStrategies/council/council.sol";
-import {RWAHolder} from "../src/governance/VotingStrategies/council/RWAHolder.sol";
+import {ConstitutionRegistry} from "../src/governance/constitution/ConstitutionRegistry.sol";
+import {IConstitutionRegistry} from "../src/governance/constitution/interface/IConstitutionRegistry.sol";
+import {Council} from "../src/governance/constitution/council/council.sol";
+import {RWAHolder} from "../src/governance/constitution/RWAHolder.sol";
 import {VotingParameters} from "../src/governance/interface/IGoverner.sol";
 
 // Plain mintable ERC20 stand-in for RWA.sol, which can't be minted without a
@@ -61,7 +61,7 @@ contract ConstitutionRegistryTest is Test {
     // registration
     // ---------------------------------------------------------------
 
-    function test_RegisterStoresImplPerVersion() public view {
+    function test_RegisterStoresImplPerVersion() public {
         assertEq(registry.constitutionImpl(COUNCIL_VERSION), address(councilImpl));
         assertEq(registry.constitutionImpl(RWA_HOLDER_VERSION), address(rwaHolderImpl));
         assertEq(registry.constitutionImpl(999), address(0));

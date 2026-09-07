@@ -1,0 +1,6 @@
+{
+  "name": "RWA Governance",
+  "description": "Vote on proposals and sign off on delegated actions from your Safe.",
+  "iconPath": "icon.svg",
+  "safe_apps_permissions": []
+}

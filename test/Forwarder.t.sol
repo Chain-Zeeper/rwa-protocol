@@ -6,9 +6,9 @@ import {ERC2771Forwarder} from "@openzeppelin/contracts/metatx/ERC2771Forwarder.
 
 import {Governor, DelegateRegistration, VotingParametersRegistration} from "../src/governance/Governer.sol";
 import {Proposal} from "../src/governance/interface/IGoverner.sol";
-import {Council} from "../src/governance/VotingStrategies/council/council.sol";
+import {Council} from "../src/governance/constitution/council/council.sol";
 import {GovernerFactory} from "../src/governance/GovernerFactory.sol";
-import {ConstitutionRegistry} from "../src/governance/VotingStrategies/ConstitutionRegistry.sol";
+import {ConstitutionRegistry} from "../src/governance/constitution/ConstitutionRegistry.sol";
 
 // Meta-transaction (ERC-2771) behaviour of a factory-deployed Governor: who
 // the governor believes the caller is, and what a forwarder can and cannot do.

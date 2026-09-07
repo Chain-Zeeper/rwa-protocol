@@ -11,7 +11,7 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 
 import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegistration} from "../src/governance/Governer.sol";
 import {Proposal, VotingParameters} from "../src/governance/interface/IGoverner.sol";
-import {Council} from "../src/governance/VotingStrategies/council/council.sol";
+import {Council} from "../src/governance/constitution/council/council.sol";
 
 // Stand-in for a cosmo-local-credit style pool (see SwapPool.sol): an Ownable
 // contract whose admin surface (fee/withdrawal controls) is only reachable

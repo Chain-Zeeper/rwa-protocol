@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
-import { IConstitution } from "../../VotingStrategies/interface/IConstitution.sol";
-import { IGoverner, Proposal, VotingParameters } from "../../interface/IGoverner.sol";
+import { IConstitution } from "./interface/IConstitution.sol";
+import { IGoverner, Proposal, VotingParameters } from "../interface/IGoverner.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 
@@ -63,6 +63,18 @@ contract RWAHolder is IConstitution, Initializable {
 
     function getDefaultVotingParameters() external view returns (VotingParameters memory) {
         return VotingParameters(uint16(quorumBps), uint16(thresholdBps), votingPeriod);
+    }
+
+
+    // A passed proposal stays executable for this long after voteEnd; past it
+    // the authorisation lapses instead of standing indefinitely.
+    function executionGrace() external pure returns (uint256) {
+        return 30 days;
+    }
+
+    // Token holders need the full window to turn out.
+    function canExecuteEarly(address, uint256) external pure returns (bool) {
+        return false;
     }
 
     function hasPassed(address governor, uint256 proposal) external view returns (bool) {
