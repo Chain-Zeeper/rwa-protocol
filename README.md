@@ -307,7 +307,6 @@ The external system settles its own consent however it likes, *before* it calls 
 
 - **Actions are bound.** Never stored, only hashed. `execute` re-hashes what it is given.
 - **Proposals are pinned to their rules.** A proposal records the constitution in force when it was created and refuses to execute under a different one.
-- **Authorisation expires.** 30 days past `voteEnd` a passed-but-abandoned proposal lapses.
 - **Re-entrancy.** OZ `ReentrancyGuard` on `propose`, `execute` and `proposeApproval` — the three entry points that hand control to arbitrary addresses. The proposal counter is consumed *before* any external call, so a re-entrant proposal cannot collide with the one being built.
 - **Execution is atomic.** A failing action takes the whole proposal down; nothing is half-applied. Revert reasons and custom errors bubble up unchanged.
 - **Vetoes bind owners too.** An owned governor cannot fast-path past a delegated selector.
