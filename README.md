@@ -249,12 +249,11 @@ These run in order, and the order is load-bearing.
 |---|---|---|---|
 | 1 | proposal exists, nonce matches | guards a stale or fabricated id | `no such proposal` |
 | 2 | not already executed | set before outbound calls, so a target cannot re-enter | `Proposal already executed` |
-| 3 | constitution unchanged | an outgoing electorate cannot bank a passed proposal and fire it after governance moves on | `constitution changed` |
-| 4 | inside the grace window | 30 days past `voteEnd`; an abandoned proposal lapses rather than standing forever | `proposal expired` |
-| 5 | actions match | re-hashed against the stored `actionHash` | `actions do not match proposal` |
-| 6 | voting closed, or the constitution waives it | an owner has nobody left to hear from | `Voting still open` |
-| 7 | **every delegate has approved** | the veto — checked independently of the vote, and applies to an owner exactly as to a council | `delegate approval missing` |
-| 8 | the constitution says it passed | the only check the electorate controls | `Proposal did not pass` |
+| 3 | inside the grace window | 30 days past `voteEnd`; an abandoned proposal lapses rather than standing forever | `proposal expired` |
+| 4 | actions match | re-hashed against the stored `actionHash` | `actions do not match proposal` |
+| 5 | voting closed, or the constitution waives it | an owner has nobody left to hear from | `Voting still open` |
+| 6 | **every delegate has approved** | the veto — checked independently of the vote, and applies to an owner exactly as to a council | `delegate approval missing` |
+| 7 | the constitution says it passed | the only check the electorate controls | `Proposal did not pass` |
 
 `canExecuteNow(proposalId)` is the same predicate in answering form. `propose` uses it to decide whether to run inline; clients use it to decide whether an action needs one transaction or two.
 
