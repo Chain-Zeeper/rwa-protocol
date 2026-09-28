@@ -13,15 +13,15 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
 // registered as a template and cloned via ConstitutionRegistry, same as Council.
 contract RWAHolder is IConstitution, Initializable {
     address public rwaToken;
-    uint256 public thresholdBps;
-    uint256 public quorumBps;
+    uint16 public thresholdBps;
+    uint16 public quorumBps;
     uint256 public votingPeriod;
 
     address complianceHub;
 
     constructor() { _disableInitializers(); }
 
-    function initialize(address _rwaToken, uint256 _thresholdBps, uint256 _quorumBps, uint256 _votingPeriod) external initializer {
+    function initialize(address _rwaToken, uint16 _thresholdBps, uint16 _quorumBps, uint256 _votingPeriod) external initializer {
         require(_thresholdBps <= 10000 && _quorumBps <= 10000, "bps must be <= 10000");
         // A zero period leaves voteEnd == voteStart: a ballot cast in any later
         // block reverts as closed, and every delegated proposal fails at the
