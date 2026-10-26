@@ -27,8 +27,8 @@ contract HolderPool is Ownable {
 // shows up as a failing test rather than going unnoticed.
 contract RWAHolderTest is Test {
     uint256 constant PERIOD = 3 days;
-    uint256 constant THRESHOLD_BPS = 5000;
-    uint256 constant QUORUM_BPS = 4000;
+    uint16 constant THRESHOLD_BPS = 5000;
+    uint16 constant QUORUM_BPS = 4000;
 
     address alice = makeAddr("alice");
     address bob = makeAddr("bob");
@@ -46,7 +46,7 @@ contract RWAHolderTest is Test {
 
         constitution = RWAHolder(address(new ERC1967Proxy(
             address(new RWAHolder()),
-            abi.encodeCall(RWAHolder.initialize, (address(token), THRESHOLD_BPS, QUORUM_BPS, PERIOD))
+            abi.encodeCall(RWAHolder.initialize, (address(token), QUORUM_BPS, THRESHOLD_BPS, PERIOD))
         )));
 
         governor = Governor(payable(address(new ERC1967Proxy(
@@ -149,7 +149,7 @@ contract RWAHolderTest is Test {
         MockRWA empty = new MockRWA();
         RWAHolder c = RWAHolder(address(new ERC1967Proxy(
             address(new RWAHolder()),
-            abi.encodeCall(RWAHolder.initialize, (address(empty), THRESHOLD_BPS, QUORUM_BPS, PERIOD))
+            abi.encodeCall(RWAHolder.initialize, (address(empty), QUORUM_BPS, THRESHOLD_BPS, PERIOD))
         )));
         assertFalse(c.hasPassed(address(governor), 0));
     }
@@ -157,7 +157,7 @@ contract RWAHolderTest is Test {
     function test_RevertWhen_InitializedWithBpsAbove10000() public {
         RWAHolder impl = new RWAHolder();
         vm.expectRevert("bps must be <= 10000");
-        new ERC1967Proxy(address(impl), abi.encodeCall(RWAHolder.initialize, (address(token), 10001, 1, PERIOD)));
+        new ERC1967Proxy(address(impl), abi.encodeCall(RWAHolder.initialize, (address(token), 1, 10001, PERIOD)));
     }
 
     // KNOWN FLAW, asserted so it cannot change silently. getVotes reads the

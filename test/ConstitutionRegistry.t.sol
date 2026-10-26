@@ -13,8 +13,8 @@ import {Council} from "../src/governance/constitution/council/council.sol";
 import {RWAHolder} from "../src/governance/constitution/RWAHolder/RWAHolder.sol";
 import {VotingParameters} from "../src/governance/interface/IGoverner.sol";
 
-// Plain mintable ERC20 stand-in for RWA.sol, which can't be minted without a
-// ComplianceHub wired up
+// Plain mintable ERC20 stand-in for RWA.sol, which has no mint of its own and
+// checks every transfer against a ComplianceHub
 contract MockRWAToken is ERC20 {
     constructor() ERC20("Mock RWA", "mRWA") {}
 
@@ -151,7 +151,7 @@ contract ConstitutionRegistryTest is Test {
 
     function test_RevertWhen_InitDataSelectorIsUnknown() public {
         // no such function on Council -> clone has no fallback -> revert
-        vm.expectRevert();
+        vm.expectRevert("ConstitutionRegistry: init reverted without reason");
         registry.deployConstitution(COUNCIL_VERSION, abi.encodeWithSignature("notAFunction(uint256)", 1));
     }
 
@@ -244,7 +244,7 @@ contract ConstitutionRegistryTest is Test {
         vm.expectRevert("bps must be <= 10000");
         registry.deployConstitution(
             RWA_HOLDER_VERSION,
-            abi.encodeCall(RWAHolder.initialize, (address(token), 10_001, 5000, 1 days))
+            abi.encodeCall(RWAHolder.initialize, (address(token), 5000, 10_001, 1 days))
         );
     }
 

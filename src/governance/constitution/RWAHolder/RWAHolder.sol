@@ -21,8 +21,9 @@ contract RWAHolder is IConstitution, Initializable {
 
     constructor() { _disableInitializers(); }
 
-    function initialize(address _rwaToken, uint16 _thresholdBps, uint16 _quorumBps, uint256 _votingPeriod) external initializer {
-        require(_thresholdBps <= 10000 && _quorumBps <= 10000, "bps must be <= 10000");
+    // (quorumBps, thresholdBps) order, as in VotingParameters and Council.
+    function initialize(address _rwaToken, uint16 _quorumBps, uint16 _thresholdBps, uint256 _votingPeriod) external initializer {
+        require(_quorumBps <= 10000 && _thresholdBps <= 10000, "bps must be <= 10000");
         // A zero period leaves voteEnd == voteStart: a ballot cast in any later
         // block reverts as closed, and every delegated proposal fails at the
         // delegate's `block.timestamp < hubProposal.voteEnd` check.

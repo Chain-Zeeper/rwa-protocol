@@ -8,6 +8,7 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
 import {Account as OZAccount} from "@openzeppelin/contracts/account/Account.sol";
 import {SignerP256} from "@openzeppelin/contracts/utils/cryptography/signers/SignerP256.sol";
 import {ERC20Mock} from "@openzeppelin/contracts/mocks/token/ERC20Mock.sol";
+import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 
 import {NdiOnChainAcc} from "../src/account/NdiOnChainAcc.sol";
 import {NdiOnChainAccFactory} from "../src/account/NdiOnChainAccFactory.sol";
@@ -101,6 +102,57 @@ contract NdiOnChainAccTest is Test {
         assertEq(a.validateUserOp(_op(address(a), _sign(0xBAD, userOpHash)), userOpHash, 0), 1);
     }
 
+    // UP | UV: user present and verified (biometric / PIN), as phones send.
+    bytes1 constant FLAGS_UP_UV = 0x05;
+
+    function test_validateUserOp_webAuthn() public {
+        NdiOnChainAcc a = _create(guardian);
+        bytes32 userOpHash = keccak256("userOp");
+
+        bytes memory sig = _signWebAuthn(PHONE_KEY, userOpHash, FLAGS_UP_UV);
+
+        vm.prank(entryPoint);
+        assertEq(a.validateUserOp(_op(address(a), sig), userOpHash, 0), 0);
+    }
+
+    function test_validateUserOp_webAuthnWrongKeyFails() public {
+        NdiOnChainAcc a = _create(guardian);
+        bytes32 userOpHash = keccak256("userOp");
+
+        bytes memory sig = _signWebAuthn(0xBAD, userOpHash, FLAGS_UP_UV);
+
+        vm.prank(entryPoint);
+        assertEq(a.validateUserOp(_op(address(a), sig), userOpHash, 0), 1);
+    }
+
+    // An assertion for one userOp can't be replayed to authorize another.
+    function test_validateUserOp_webAuthnWrongChallengeFails() public {
+        NdiOnChainAcc a = _create(guardian);
+        bytes memory sig = _signWebAuthn(PHONE_KEY, keccak256("other userOp"), FLAGS_UP_UV);
+
+        vm.prank(entryPoint);
+        assertEq(a.validateUserOp(_op(address(a), sig), keccak256("userOp"), 0), 1);
+    }
+
+    // Presence alone (no biometric / PIN) is not enough.
+    function test_validateUserOp_webAuthnRequiresUserVerification() public {
+        NdiOnChainAcc a = _create(guardian);
+        bytes32 userOpHash = keccak256("userOp");
+
+        bytes memory sig = _signWebAuthn(PHONE_KEY, userOpHash, 0x01);
+
+        vm.prank(entryPoint);
+        assertEq(a.validateUserOp(_op(address(a), sig), userOpHash, 0), 1);
+    }
+
+    function test_validateUserOp_malformedSignatureFails() public {
+        NdiOnChainAcc a = _create(guardian);
+        bytes32 userOpHash = keccak256("userOp");
+
+        vm.prank(entryPoint);
+        assertEq(a.validateUserOp(_op(address(a), hex"deadbeef"), userOpHash, 0), 1);
+    }
+
     function test_validateUserOp_onlyEntryPoint() public {
         NdiOnChainAcc a = _create(guardian);
         bytes32 userOpHash = keccak256("userOp");
@@ -147,7 +199,7 @@ contract NdiOnChainAccTest is Test {
         calls[0] = Execution(address(token), 0, abi.encodeCall(token.transfer, (outsider, 100e18)));
 
         vm.prank(outsider);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(OZAccount.AccountUnauthorized.selector, outsider));
         a.execute(MODE_BATCH, abi.encode(calls));
     }
 
@@ -236,6 +288,23 @@ contract NdiOnChainAccTest is Test {
         (bytes32 r, bytes32 s) = vm.signP256(pk, digest);
         if (uint256(s) > P256_N / 2) s = bytes32(P256_N - uint256(s));
         return abi.encodePacked(r, s);
+    }
+
+    // A passkey assertion as the phone's authenticator would produce it:
+    // flags in authenticatorData[32], the userOp hash as the base64url
+    // challenge in clientDataJSON, and a P-256 signature over
+    // sha256(authenticatorData || sha256(clientDataJSON)).
+    function _signWebAuthn(uint256 pk, bytes32 challenge, bytes1 flags) internal pure returns (bytes memory) {
+        bytes memory authData = abi.encodePacked(keccak256("ndi.bt"), flags, uint32(1));
+        string memory prefix = '{"type":"webauthn.get",';
+        string memory clientData = string.concat(
+            prefix, '"challenge":"', Base64.encodeURL(abi.encodePacked(challenge)), '","origin":"https://ndi.bt"}'
+        );
+        bytes memory sig = _sign(pk, sha256(abi.encodePacked(authData, sha256(bytes(clientData)))));
+        (bytes32 r, bytes32 s) = abi.decode(sig, (bytes32, bytes32));
+        // WebAuthn.tryDecodeAuth reads the WebAuthnAuth fields as a flat tuple,
+        // without the leading offset abi.encode(struct) would add.
+        return abi.encode(r, s, bytes(prefix).length, uint256(1), authData, clientData);
     }
 
     function _op(address sender, bytes memory signature) internal pure returns (PackedUserOperation memory op) {

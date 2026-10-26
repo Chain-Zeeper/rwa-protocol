@@ -55,6 +55,13 @@ contract MockTreasuryToken is ERC20 {
     }
 }
 
+// Refuses ETH, to make a rescue payout fail
+contract RejectsEth {
+    receive() external payable {
+        revert();
+    }
+}
+
 // Governance over a community-owned pool: a council of villagers proposes and
 // votes on admin actions against the pool, and only a passed proposal can
 // execute them (the pool's `owner` is the Governor itself).
@@ -1658,5 +1665,123 @@ contract GovernanceTest is Test {
         vm.warp(block.timestamp + VOTING_PERIOD + 1);
         vm.expectRevert("insufficient balance");
         governor.execute(proposalId, 0, targets, values, calldatas, keccak256("rescue too much"));
+    }
+
+    // ---------------------------------------------------------------
+    // input validation and lifecycle edges
+    // ---------------------------------------------------------------
+
+    function test_RevertWhen_ProposingWithMismatchedArrays() public {
+        address[] memory targets = new address[](2);
+        uint256[] memory values = new uint256[](1);
+        bytes[] memory calldatas = new bytes[](1);
+
+        vm.prank(alice);
+        vm.expectRevert("Mismatched proposal parameters");
+        governor.propose(targets, values, calldatas, keccak256("mismatched"));
+    }
+
+    // 1-3 bytes of calldata is neither a bare transfer nor a selector, so no
+    // rule could be keyed on it
+    function test_RevertWhen_CalldataIsShorterThanASelector() public {
+        address[] memory targets = new address[](1);
+        uint256[] memory values = new uint256[](1);
+        bytes[] memory calldatas = new bytes[](1);
+        targets[0] = address(pool);
+        calldatas[0] = hex"123456";
+
+        vm.prank(alice);
+        vm.expectRevert("calldata too short");
+        governor.propose(targets, values, calldatas, keccak256("short"));
+    }
+
+    function test_RevertWhen_VotingOnAnUnknownProposal() public {
+        vm.prank(alice);
+        vm.expectRevert("Voting is closed");
+        governor.vote(12345, true);
+    }
+
+    function test_RevertWhen_VotingAfterVoteEnd() public {
+        (uint256 proposalId,,,,) = _proposeSetFee(100);
+        vm.warp(governor.getProposal(proposalId).voteEnd + 1);
+
+        vm.prank(alice);
+        vm.expectRevert("Voting is closed");
+        governor.vote(proposalId, true);
+    }
+
+    function test_RevertWhen_ExecutingAnUnknownProposal() public {
+        (, address[] memory targets, uint256[] memory values, bytes[] memory calldatas, bytes32 descriptionHash) =
+            _proposeSetFee(100);
+
+        vm.expectRevert("no such proposal");
+        governor.execute(12345, 0, targets, values, calldatas, descriptionHash);
+    }
+
+    function test_RevertWhen_ExecutingWithTheWrongNounce() public {
+        (uint256 proposalId, address[] memory targets, uint256[] memory values, bytes[] memory calldatas, bytes32 descriptionHash) =
+            _proposeSetFee(100);
+        _voteUnanimously(proposalId);
+        vm.warp(block.timestamp + VOTING_PERIOD + 1);
+
+        vm.expectRevert("Invalid nounce");
+        governor.execute(proposalId, 1, targets, values, calldatas, descriptionHash);
+    }
+
+    // The target's own revert reason surfaces through execute, rather than a
+    // generic failure
+    function test_RevertWhen_EthRescueRecipientRejects() public {
+        vm.deal(address(governor), 1 ether);
+        address rejector = address(new RejectsEth());
+        (uint256 proposalId, address[] memory targets, uint256[] memory values, bytes[] memory calldatas) = _passProposal(
+            governor,
+            address(governor),
+            abi.encodeCall(Governor.rescue, (address(0), rejector, 1 ether)),
+            keccak256("rescue to rejector")
+        );
+        vm.warp(block.timestamp + VOTING_PERIOD + 1);
+
+        vm.expectRevert("eth rescue failed");
+        governor.execute(proposalId, 0, targets, values, calldatas, keccak256("rescue to rejector"));
+        assertEq(address(governor).balance, 1 ether);
+    }
+
+    function test_RevertWhen_ProposeApprovalWithMismatchedArrays() public {
+        Governor spoke = _deploySpokeGovernor();
+        (uint256 proposalId,,,, bytes32 descriptionHash) = _proposeSetFee(100);
+
+        vm.expectRevert("length mismatch");
+        spoke.proposeApproval(
+            address(governor), proposalId, new address[](1), new uint256[](0), new bytes[](1), descriptionHash
+        );
+    }
+
+    // A spoke won't open an approval vote for a hub proposal whose own vote
+    // is already over: there would be nothing left to approve in time
+    function test_RevertWhen_ProposeApprovalAfterHubVotingCloses() public {
+        Governor spoke = _deploySpokeGovernor();
+        (uint256 proposalId, address[] memory targets, uint256[] memory values, bytes[] memory calldatas, bytes32 descriptionHash) =
+            _proposeSetFee(100);
+        vm.warp(governor.getProposal(proposalId).voteEnd);
+
+        vm.expectRevert("hub voting already closed");
+        spoke.proposeApproval(address(governor), proposalId, targets, values, calldatas, descriptionHash);
+    }
+
+    // Membership lookups only answer for settled history: the current
+    // timestamp could still change within this block.
+    function test_RevertWhen_CouncilSizeIsLookedUpAtTheCurrentTime() public {
+        vm.expectRevert("Council: future lookup");
+        council.getPastTotalCouncilMembers(block.timestamp);
+    }
+
+    function test_CouncilSizeIsPinnedToThePast() public {
+        uint256 before = block.timestamp;
+        vm.warp(before + 1);
+        council.addCouncilMember(dave);
+        vm.warp(before + 2);
+
+        assertEq(council.getPastTotalCouncilMembers(before), 3);
+        assertEq(council.getPastTotalCouncilMembers(before + 1), 4);
     }
 }

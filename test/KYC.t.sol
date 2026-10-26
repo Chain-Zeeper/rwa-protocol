@@ -63,10 +63,20 @@ contract KYCTest is Test {
         assertEq(a.recipient, full);
         assertEq(a.attester, address(kyc));
         assertTrue(a.revocable);
+        assertEq(a.refUID, bytes32(0));                      // first KYC: no predecessor
         (uint8 tier, bytes32 ref, bytes32 providerId) = abi.decode(a.data, (uint8, bytes32, bytes32));
         assertEq(tier, uint8(KycTier.Full));
         assertEq(ref, REF);
         assertEq(providerId, PROVIDER_ID);
+    }
+
+    function test_attestEmits() public {
+        address temp = makeAddr("temp");
+        // uid (topic 2) depends on EAS internals, so it isn't checked
+        vm.expectEmit(true, false, false, true, address(kyc));
+        emit KYC.KYCAttested(temp, bytes32(0), KycTier.Basic, 123);
+        vm.prank(provider);
+        kyc.attest(temp, KycTier.Basic, REF, PROVIDER_ID, 123);
     }
 
     function test_reAttestRevokesPrevious() public {
@@ -76,6 +86,7 @@ contract KYCTest is Test {
 
         assertTrue(eas.getAttestation(oldUid).revocationTime != 0);
         assertTrue(eas.isAttestationValid(newUid));
+        assertEq(eas.getAttestation(newUid).refUID, oldUid); // chained to the one it replaces
         (, KycTier tier) = kyc.kycOf(basic);
         assertEq(uint8(tier), uint8(KycTier.Full));
         assertTrue(_canTransfer(basic, nobody) == false);   // nobody still can't receive
@@ -138,6 +149,14 @@ contract KYCTest is Test {
         assertFalse(_canTransfer(basic, full));
     }
 
+    function test_revokeEmits() public {
+        (bytes32 uid,,) = kyc.records(full);
+        vm.expectEmit(true, true, false, false, address(kyc));
+        emit KYC.KYCRevoked(full, uid);
+        vm.prank(provider);
+        kyc.revoke(full);
+    }
+
     function test_revokeNotKycdReverts() public {
         vm.prank(provider);
         vm.expectRevert(abi.encodeWithSelector(NOT_KYCD.selector, nobody));
@@ -163,6 +182,31 @@ contract KYCTest is Test {
         vm.warp(expiry);
         assertFalse(_canTransfer(temp, full));
         assertFalse(_canTransfer(full, temp));
+    }
+
+    // An expired record is still on file (and its EAS attestation unrevoked),
+    // so renewing revokes it and chains the new attestation to it.
+    function test_renewAfterExpiry() public {
+        address temp = makeAddr("temp");
+        uint64 expiry = uint64(block.timestamp + 30 days);
+        vm.prank(provider);
+        bytes32 oldUid = kyc.attest(temp, KycTier.Full, REF, PROVIDER_ID, expiry);
+        vm.warp(expiry + 1);
+        assertFalse(_canTransfer(temp, full));
+
+        vm.prank(provider);
+        bytes32 newUid = kyc.attest(temp, KycTier.Full, REF, PROVIDER_ID, uint64(block.timestamp + 365 days));
+
+        assertTrue(eas.getAttestation(oldUid).revocationTime != 0);
+        assertEq(eas.getAttestation(newUid).refUID, oldUid);
+        assertTrue(_canTransfer(temp, full));
+    }
+
+    // ---------------------------------------------------------------- metadata
+
+    function test_metadata() public view {
+        assertEq(kyc.name(), "KYC");
+        assertEq(kyc.ruleReference(), "KYC");
     }
 
     // ---------------------------------------------------------- through the hub

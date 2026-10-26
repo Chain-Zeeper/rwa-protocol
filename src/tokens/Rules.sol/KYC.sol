@@ -62,11 +62,14 @@ contract KYC is IRule, AccessControl {
     }
 
     // Attests `account` at `tier`. An existing attestation is revoked first,
-    // so this also handles tier changes and renewals.
+    // so this also handles tier changes and renewals. The new attestation's
+    // refUID points at the one it replaces, chaining the account's KYC
+    // history on EAS.
     function attest(address account, KycTier tier, bytes32 kycRef, bytes32 providerId, uint64 expirationTime)
         external onlyRole(KYC_PROVIDER) returns (bytes32 uid)
     {
-        if (records[account].uid != bytes32(0)) _revoke(account);
+        bytes32 prev = records[account].uid;
+        if (prev != bytes32(0)) _revoke(account);
 
         uid = eas.attest(AttestationRequest({
             schema: schemaUID,
@@ -74,7 +77,7 @@ contract KYC is IRule, AccessControl {
                 recipient: account,
                 expirationTime: expirationTime,
                 revocable: true,
-                refUID: bytes32(0),
+                refUID: prev,      // 0 for a first-time KYC
                 data: abi.encode(uint8(tier), kycRef, providerId),
                 value: 0
             })

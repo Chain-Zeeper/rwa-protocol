@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import {Test} from "forge-std/Test.sol";
 import {ERC2771Forwarder} from "@openzeppelin/contracts/metatx/ERC2771Forwarder.sol";
+import {Errors} from "@openzeppelin/contracts/utils/Errors.sol";
 
 import {Governor, DelegateRegistration, VotingParametersRegistration} from "../src/governance/Governer.sol";
 import {Proposal} from "../src/governance/interface/IGoverner.sol";
@@ -109,6 +110,18 @@ contract ForwarderTest is Test {
         returns (ERC2771Forwarder.ForwardRequestData memory)
     {
         return _buildRequest(forwarder, signerPk, from, address(governor), data, uint48(block.timestamp + 1 days));
+    }
+
+    // The forwarder swallows the target's revert reason (it reverts with
+    // FailedCall), so to pin *why* the governor refused, replay the exact
+    // relayed call: forwarder as msg.sender, signer appended per ERC-2771.
+    function _expectGovernorRejectsRelayed(address from, bytes memory data, bytes memory reason) internal {
+        vm.prank(address(forwarder));
+        vm.expectRevert(reason);
+        // On a low-level call, a matching expectRevert reports success and a
+        // mismatch reports failure, rather than failing the test itself.
+        (bool ok,) = address(governor).call(abi.encodePacked(data, from));
+        assertTrue(ok, "governor reverted with a different reason");
     }
 
     function _proposalActions()
@@ -228,8 +241,9 @@ contract ForwarderTest is Test {
         ERC2771Forwarder.ForwardRequestData memory request = _request(outsiderPk, outsider, data);
 
         vm.prank(relayer);
-        vm.expectRevert();
+        vm.expectRevert(Errors.FailedCall.selector);
         forwarder.execute(request);
+        _expectGovernorRejectsRelayed(outsider, data, "Proposer not eligible");
     }
 
     function test_RevertWhen_RelayedVoterVotesTwice() public {
@@ -247,8 +261,9 @@ contract ForwarderTest is Test {
         ERC2771Forwarder.ForwardRequestData memory secondVote = _request(alicePk, alice, voteData);
 
         vm.prank(relayer);
-        vm.expectRevert();
+        vm.expectRevert(Errors.FailedCall.selector);
         forwarder.execute(secondVote);
+        _expectGovernorRejectsRelayed(alice, voteData, "Already voted");
     }
 
     function test_RevertWhen_RelayerForgesAnotherMembersVote() public {
@@ -263,7 +278,7 @@ contract ForwarderTest is Test {
             _buildRequest(forwarder, outsiderPk, bob, address(governor), abi.encodeCall(Governor.vote, (proposalId, true)), uint48(block.timestamp + 1 days));
 
         vm.prank(relayer);
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(ERC2771Forwarder.ERC2771ForwarderInvalidSigner.selector, outsider, bob));
         forwarder.execute(forged);
 
         assertFalse(governor.hasVoted(proposalId, bob));
@@ -399,9 +414,10 @@ contract ForwarderTest is Test {
         forwarder.execute(request);
         assertEq(forwarder.nonces(alice), 1);
 
-        // same signed payload, nonce already burned
+        // same signed payload, nonce already burned: the digest is rebuilt with
+        // the new nonce, so the signature recovers to an unrelated address
         vm.prank(relayer);
-        vm.expectRevert();
+        vm.expectPartialRevert(ERC2771Forwarder.ERC2771ForwarderInvalidSigner.selector);
         forwarder.execute(request);
     }
 
@@ -450,8 +466,9 @@ contract ForwarderTest is Test {
         ERC2771Forwarder.ForwardRequestData memory request = _request(alicePk, alice, data);
 
         vm.prank(relayer);
-        vm.expectRevert();
+        vm.expectRevert(Errors.FailedCall.selector);
         forwarder.execute(request);
+        _expectGovernorRejectsRelayed(alice, data, "only via executed proposal");
 
         (uint16 quorumBps, , ) = governor.votingParameters(treasury, bytes4(0x12345678));
         assertEq(quorumBps, 0);

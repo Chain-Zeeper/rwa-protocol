@@ -467,7 +467,7 @@ contract GovernerFactoryTest is Test {
             signature: abi.encodePacked(r, s, v)
         });
 
-        vm.expectRevert();
+        vm.expectRevert(abi.encodeWithSelector(ERC2771Forwarder.ERC2771ForwarderInvalidSigner.selector, bob, alice));
         forwarder.execute(request);
     }
 
@@ -485,5 +485,10 @@ contract GovernerFactoryTest is Test {
         uint256 proposalId = governor.propose(targets, values, calldatas, descriptionHash);
 
         assertEq(governor.getProposal(proposalId).proposer, alice);
+    }
+
+    function test_RevertWhen_ConstructedWithZeroRegistry() public {
+        vm.expectRevert("zero constitution registry");
+        new GovernerFactory(address(this), address(0));
     }
 }

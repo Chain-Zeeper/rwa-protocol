@@ -907,7 +907,7 @@ contract OwnedWithTwoDelegatesTest is OwnedGovernanceBase {
 
         assertTrue(hub.getProposal(id).executed);
         assertEq(treasury.balance, 1 ether);
-        vm.expectRevert();
+        vm.expectRevert(bytes(""));   // out of range: the array getter reverts empty
         hub.delegates(id, 0); // no delegate was required
     }
 
@@ -1484,7 +1484,7 @@ contract ExemptionTest is OwnedGovernanceBase {
         uint256 id = hub.propose(t, v, c, keccak256("withdraw"));
 
         assertEq(treasury.balance, 1 ether);
-        vm.expectRevert();
+        vm.expectRevert(bytes(""));   // out of range: the array getter reverts empty
         hub.delegates(id, 0); // nobody was asked
     }
 
