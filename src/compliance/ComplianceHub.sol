@@ -1,25 +1,46 @@
 // SPDX-License-Identifier: MIT
-import "../token policy/IRule.sol";
-import {IComplianceHub} from "../token policy/IComplianceHub.sol";
-import "@openzeppelin/contracts/access/AccessControl.sol";
+pragma solidity ^0.8.20;
 
-struct Rule{
+import {IRule} from "../token policy/IRule.sol";
+import {IComplianceHub} from "../token policy/IComplianceHub.sol";
+import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
+
+struct Rule {
     address ruleAddress;
+    // No new adoptions; tokens already enforcing it keep running it until
+    // their officer migrates. One-way.
+    bool deprecated;
+    // Emergency stop: canTransfer fails closed for every token enforcing it.
+    bool suspended;
     bytes32 codeHash;
 }
 struct RuleParams {
-    address token;
-    uint8 ruleIndex;
     bytes params;
-    bytes32 dochash;
+    bytes32 docHash;
 }
 
 error INVALID_RULE();
-contract Compliancehub is IComplianceHub, AccessControl {
+error RULE_CODE_CHANGED(uint8 index);
+error RULE_LIMIT();
+error RULE_NOT_ADOPTABLE(uint8 index);
+error RULE_ALREADY_ON(uint8 index);
+error RULE_NOT_ON(uint8 index);
+error STALE_POLICY();
+
+// Rules are registered globally and addressed by index (0-255). Each token's
+// policy is a uint256 bitmask: bit i set => rule i is enforced on that token,
+// with ruleParams[token][i] passed to the rule's check().
+contract ComplianceHub is IComplianceHub, AccessControl {
+    event RuleAdded(uint8 indexed index, address indexed ruleAddress, bytes32 codeHash);
     event PolicyUpdated(address indexed token, uint256 oldMask, uint256 newMask);
+    event PolicyParametersApplied(address indexed token, uint8 indexed index, bytes32 docHash);
+    event RuleDeprecated(uint8 indexed index);
+    event RuleSuspended(uint8 indexed index, bool suspended);
 
     mapping(uint8 => Rule) public ruleByIndex;
-    uint8 public nextIndex;
+    // uint16 so all 256 slots are usable: with a uint8 the increment after
+    // registering index 255 overflows and reverts.
+    uint16 public nextIndex;
     mapping(address => uint256) public policy;
     mapping(address => mapping(uint8 => RuleParams)) public ruleParams;
 
@@ -29,26 +50,51 @@ contract Compliancehub is IComplianceHub, AccessControl {
     constructor() {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
-    
+
     function canTransfer(address token, address from, address to, uint256 amt)
         external view returns (bool)
     {
         uint256 remaining = policy[token];
         while (remaining != 0) {
             uint256 bit = remaining & (~remaining + 1);   // isolate lowest set bit
-            uint8 i = _bitIndex(bit);                       // convert bit to rule index (0-255)
+            uint8 i = _bitIndex(bit);                     // convert bit to rule index (0-255)
 
             Rule storage rule = ruleByIndex[i];
             if (rule.ruleAddress == address(0)) revert INVALID_RULE();
+            if (rule.suspended) return false;
+            // The audited code is what's registered; refuse to run anything else
+            // (e.g. a metamorphic contract redeployed at the same address).
+            if (rule.ruleAddress.codehash != rule.codeHash) revert RULE_CODE_CHANGED(i);
 
-            if (!IRule(rule.ruleAddress).check(from, to, amt, ruleParams[token][i].params)) {
+            if (!IRule(rule.ruleAddress).check(token, from, to, amt, ruleParams[token][i].params)) {
                 return false;
             }
             remaining &= remaining - 1;   // clear lowest set bit, move to the next one
+        }
+        return true;
     }
-    return true;
+
+    // Decodes a token's policy mask into the rules that are switched on, in
+    // the order canTransfer runs them, so callers don't have to read the raw
+    // integer.
+    function policyRules(address token)
+        external view returns (uint8[] memory indices, address[] memory rules)
+    {
+        uint256 mask = policy[token];
+        uint256 count;
+        for (uint256 m = mask; m != 0; m &= m - 1) count++;
+
+        indices = new uint8[](count);
+        rules = new address[](count);
+        for (uint256 n; mask != 0; n++) {
+            uint8 i = _bitIndex(mask & (~mask + 1));
+            indices[n] = i;
+            rules[n] = ruleByIndex[i].ruleAddress;
+            mask &= mask - 1;
+        }
     }
-    function _bitIndex(uint256 bit) private pure returns (uint8 r) {
+
+    function _bitIndex(uint256 bit) internal pure returns (uint8 r) {
         // bit has exactly one bit set, binary-search for its position
         if (bit & type(uint128).max == 0) { bit >>= 128; r += 128; }
         if (bit & type(uint64).max  == 0) { bit >>= 64;  r += 64;  }
@@ -60,39 +106,111 @@ contract Compliancehub is IComplianceHub, AccessControl {
         if (bit & 0x1 == 0) { r += 1; }
     }
 
-    function addRule(address ruleAddress) external onlyRole(COMPLIANCE_AUDITOR) {
-        bytes32 codeHash = keccak256(abi.encodePacked(ruleAddress.code));
-        ruleByIndex[nextIndex] = Rule(ruleAddress, codeHash);
+    function addRule(address ruleAddress) external onlyRole(COMPLIANCE_AUDITOR) returns (uint8 index) {
+        if (ruleAddress.code.length == 0) revert INVALID_RULE();
+        if (nextIndex > type(uint8).max) revert RULE_LIMIT();
+        index = uint8(nextIndex);
+        bytes32 codeHash = ruleAddress.codehash;
+        ruleByIndex[index] = Rule(ruleAddress, false, false, codeHash);
         nextIndex++;
-    }
-    
-    function setPolicy(address token, uint256 mask) external onlyRole(COMPLIANCE_AUDITOR) {
-        policy[token] = mask;
-    }
-    function applyPolicyParameters(address token, uint8 index, bytes calldata params, bytes32 docHash) onlyRole(COMPLIANCE_OFFICER) external {
-        _applyPolicyParameters(token, index, params, docHash);      
+        emit RuleAdded(index, ruleAddress, codeHash);
     }
 
-    function _applyPolicyParameters(address token, uint8 index, bytes calldata params, bytes32 docHash) internal {
-        if(index >= nextIndex) revert INVALID_RULE();
-        ruleParams[token][index] = RuleParams(token, index, params, docHash);        
+    function deprecateRule(uint8 index) external onlyRole(COMPLIANCE_AUDITOR) {
+        if (index >= nextIndex) revert INVALID_RULE();
+        ruleByIndex[index].deprecated = true;
+        emit RuleDeprecated(index);
+    }
+
+    function suspendRule(uint8 index) external onlyRole(COMPLIANCE_AUDITOR) {
+        _setSuspended(index, true);
+    }
+
+    function unsuspendRule(uint8 index) external onlyRole(COMPLIANCE_AUDITOR) {
+        _setSuspended(index, false);
+    }
+
+    function _setSuspended(uint8 index, bool suspended) private {
+        if (index >= nextIndex) revert INVALID_RULE();
+        ruleByIndex[index].suspended = suspended;
+        emit RuleSuspended(index, suspended);
+    }
+
+    // Switches one rule on for a token, writing its params in the same call so
+    // the bit is never live without them.
+    function applyRule(address token, uint8 index, bytes calldata params, bytes32 docHash)
+        external onlyRole(COMPLIANCE_OFFICER)
+    {
+        uint256 oldMask = policy[token];
+        if (oldMask & (uint256(1) << index) != 0) revert RULE_ALREADY_ON(index);
+        uint256 mask = _adopt(token, index, params, docHash, oldMask);
+        policy[token] = mask;
+        emit PolicyUpdated(token, oldMask, mask);
+    }
+
+    // Switches one rule off for a token and deletes its params, so turning it
+    // back on later can't pick up stale ones.
+    function removeRule(address token, uint8 index) external onlyRole(COMPLIANCE_OFFICER) {
+        uint256 oldMask = policy[token];
+        uint256 bit = uint256(1) << index;
+        if (oldMask & bit == 0) revert RULE_NOT_ON(index);
+        delete ruleParams[token][index];
+        policy[token] = oldMask & ~bit;
+        emit PolicyUpdated(token, oldMask, oldMask & ~bit);
     }
 
     struct Op { uint8 index; bool adopt; bytes params; bytes32 docHash; }
 
-    function applyPolicyBatch(address token, Op[] calldata ops, uint256 expectedMask) external {
-        require(policy[token] == expectedMask, "STALE_POLICY");   // compare-and-swap
+    // Several switches in one atomic call, e.g. a migration that adopts v2 and
+    // drops v1 together. Adopting a rule that's already on re-parameterises it;
+    // dropping one that's off is a no-op. expectedMask guards against acting
+    // on a policy that changed since the caller read it.
+    function setRules(address token, Op[] calldata ops, uint256 expectedMask)
+        external onlyRole(COMPLIANCE_OFFICER)
+    {
         uint256 oldMask = policy[token];
-        for (uint i; i < ops.length; i++) {
+        if (oldMask != expectedMask) revert STALE_POLICY();   // compare-and-swap
+        uint256 mask = oldMask;
+        for (uint256 i; i < ops.length; i++) {
+            uint8 index = ops[i].index;
             if (ops[i].adopt) {
-                _applyPolicyParameters(token, ops[i].index, ops[i].params, ops[i].docHash);
+                mask = _adopt(token, index, ops[i].params, ops[i].docHash, mask);
             } else {
-                delete ruleParams[token][ops[i].index];
+                delete ruleParams[token][index];
+                mask &= ~(uint256(1) << index);
             }
         }
-        emit PolicyUpdated(token, oldMask, policy[token]);
+        policy[token] = mask;
+        emit PolicyUpdated(token, oldMask, mask);
     }
 
+    // Re-parameterises a rule the token already enforces. Allowed even if the
+    // rule is deprecated, so officers can still tune it mid-migration.
+    function applyPolicyParameters(address token, uint8 index, bytes calldata params, bytes32 docHash)
+        external onlyRole(COMPLIANCE_OFFICER)
+    {
+        if (policy[token] & (uint256(1) << index) == 0) revert RULE_NOT_ON(index);
+        _writeParams(token, index, params, docHash);
+    }
 
+    // Writes params for `index` and returns `mask` with its bit set. Turning a
+    // switch on (bit not yet in `mask`) requires the rule to be adoptable;
+    // re-parameterising one that's already on doesn't.
+    function _adopt(address token, uint8 index, bytes calldata params, bytes32 docHash, uint256 mask)
+        private returns (uint256)
+    {
+        if (index >= nextIndex) revert INVALID_RULE();
+        uint256 bit = uint256(1) << index;
+        if (mask & bit == 0) {
+            Rule storage rule = ruleByIndex[index];
+            if (rule.deprecated || rule.suspended) revert RULE_NOT_ADOPTABLE(index);
+        }
+        _writeParams(token, index, params, docHash);
+        return mask | bit;
+    }
 
+    function _writeParams(address token, uint8 index, bytes calldata params, bytes32 docHash) private {
+        ruleParams[token][index] = RuleParams(params, docHash);
+        emit PolicyParametersApplied(token, index, docHash);
+    }
 }

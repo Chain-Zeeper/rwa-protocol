@@ -1,8 +1,11 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
 import {IRule} from "../../token policy/IRule.sol";
 
 contract MaxTransferable is IRule {
 
-    function check(address _from, address _to, uint256 _amount, bytes memory params) external pure returns (bool) {
+    function check(address _token, address _from, address _to, uint256 _amount, bytes memory params) external pure returns (bool) {
         uint256 maxAmount = abi.decode(params, (uint256));
         return _amount <= maxAmount;
     }

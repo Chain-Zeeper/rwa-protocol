@@ -278,6 +278,27 @@ Initializers take their authority as a **parameter**, never `msg.sender` — the
 
 **The governor's own selectors can be seeded at deployment.** A governor's address is deterministic, so it can be wired to gate its own `changeConstitutionalStrategy` in the very transaction that creates it. Without that, the most powerful action in the system is ungated in the window before the first proposal lands.
 
+### Smart accounts (ERC-4337)
+
+`NdiOnChainAcc` is the user wallet: an ERC-4337 account signed by a P-256 key on the user's phone (passkey or Secure Enclave / Keystore), with optional guardian recovery. `NdiOnChainAccFactory` deploys it as CREATE2 clones, so an account address is known before deployment. Gas is sponsored by a hosted bundler + paymaster; no paymaster contract is deployed.
+
+The implementation and factory go through the canonical CREATE2 deployer, so the same `ENTRY_POINT` and `SALT` give the same addresses on every chain:
+
+```shell
+cast wallet import deployer --interactive   # once
+
+# dry run, then deploy + verify on Chiado (10200)
+forge script script/DeployNdiOnChainAcc.s.sol --rpc-url chiado
+forge script script/DeployNdiOnChainAcc.s.sol --rpc-url chiado --account deployer --broadcast \
+  --verify --verifier blockscout --verifier-url https://gnosis-chiado.blockscout.com/api/
+
+# Gnosis mainnet (100)
+forge script script/DeployNdiOnChainAcc.s.sol --rpc-url gnosis --account deployer --broadcast \
+  --verify --verifier blockscout --verifier-url https://gnosis.blockscout.com/api/
+```
+
+`ENTRY_POINT` defaults to v0.8 (`0x4337084D9E255Ff0702461CF8895CE9E3b5Ff108`); set it to a version your provider supports. Changing it, the salt, or any contract code changes every address. Comment and formatting edits do not (`bytecode_hash = "none"`). Both chains have the P-256 precompile, so signature checks are cheap.
+
 ---
 
 ## External governance protocols
@@ -399,4 +420,8 @@ src/governance/
     └── interface/
         ├── IConstitution.sol
         └── IConstitutionRegistry.sol
+src/account/
+├── NdiOnChainAcc.sol                # ERC-4337 account, P-256 / WebAuthn signer, guardian recovery
+└── NdiOnChainAccFactory.sol         # CREATE2 clone factory (ERC-4337 initCode target)
+script/DeployNdiOnChainAcc.s.sol     # deterministic deploy to Chiado / Gnosis
 ```

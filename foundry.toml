@@ -3,7 +3,15 @@ src = "src"
 out = "out"
 libs = ["lib"]
 via_ir = true
+# Keep CREATE2 addresses stable across comment/format-only edits (the source
+# hash is otherwise embedded in bytecode). See script/DeployNdiOnChainAcc.s.sol.
+bytecode_hash = "none"
 remappings = [
-    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/"
+    "@openzeppelin/contracts/=lib/openzeppelin-contracts/contracts/",
+    "@eas/=lib/eas-contracts/contracts/"
 ]
 # See more config options https://github.com/foundry-rs/foundry/blob/master/crates/config/README.md#all-options
+
+[rpc_endpoints]
+chiado = "https://rpc.chiadochain.net"
+gnosis = "https://rpc.gnosischain.com"

@@ -25,15 +25,7 @@ import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155
 // Optional guardian (e.g. the co-op / governor) can rotate the device key when
 // a phone is lost. address(0) disables recovery. The guardian can move funds
 // indirectly by installing its own key, so it must be trusted accordingly.
-contract NdiOnChainAcc is
-    Account,
-    SignerWebAuthn,
-    ERC7739,
-    ERC7821,
-    ERC721Holder,
-    ERC1155Holder,
-    Initializable
-{
+contract NdiOnChainAcc is Account, SignerWebAuthn, ERC7739, ERC7821, ERC721Holder, ERC1155Holder, Initializable {
     IEntryPoint private immutable _entryPoint;
 
     address public guardian;
