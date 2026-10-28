@@ -251,12 +251,11 @@ These run in order, and the order is load-bearing.
 |---|---|---|---|
 | 1 | proposal exists, nonce matches | guards a stale or fabricated id | `no such proposal` |
 | 2 | not already executed | set before outbound calls, so a target cannot re-enter | `Proposal already executed` |
-| 3 | constitution unchanged | an outgoing electorate cannot bank a passed proposal and fire it after governance moves on | `constitution changed` |
-| 4 | inside the grace window | 30 days past `voteEnd`; an abandoned proposal lapses rather than standing forever | `proposal expired` |
-| 5 | actions match | re-hashed against the stored `actionHash` | `actions do not match proposal` |
-| 6 | voting closed, or the constitution waives it | an owner has nobody left to hear from | `Voting still open` |
-| 7 | **every delegate has approved** | the veto — checked independently of the vote, and applies to an owner exactly as to a council | `delegate approval missing` |
-| 8 | the constitution says it passed | the only check the electorate controls | `Proposal did not pass` |
+| 3 | inside the grace window | 30 days past `voteEnd`; an abandoned proposal lapses rather than standing forever | `proposal expired` |
+| 4 | actions match | re-hashed against the stored `actionHash` | `actions do not match proposal` |
+| 5 | voting closed, or the constitution waives it | an owner has nobody left to hear from | `Voting still open` |
+| 6 | **every delegate has approved** | the veto — checked independently of the vote, and applies to an owner exactly as to a council | `delegate approval missing` |
+| 7 | the constitution says it passed | the only check the electorate controls | `Proposal did not pass` |
 
 `canExecuteNow(proposalId)` is the same predicate in answering form. `propose` uses it to decide whether to run inline; clients use it to decide whether an action needs one transaction or two.
 
@@ -330,28 +329,15 @@ The external system settles its own consent however it likes, *before* it calls 
 
 - **Actions are bound.** Never stored, only hashed. `execute` re-hashes what it is given.
 - **Proposals are pinned to their rules.** A proposal records the constitution in force when it was created and refuses to execute under a different one.
-- **Authorisation expires.** 30 days past `voteEnd` a passed-but-abandoned proposal lapses.
 - **Re-entrancy.** OZ `ReentrancyGuard` on `propose`, `execute` and `proposeApproval` — the three entry points that hand control to arbitrary addresses. The proposal counter is consumed *before* any external call, so a re-entrant proposal cannot collide with the one being built.
 - **Execution is atomic.** A failing action takes the whole proposal down; nothing is half-applied. Revert reasons and custom errors bubble up unchanged.
 - **Vetoes bind owners too.** An owned governor cannot fast-path past a delegated selector.
 - **Approvals are one-way and idempotent.** Approving twice never rewrites the original decision timestamp.
-- **Losing the owner is unrecoverable**, so both routes to it are closed — transfer is two-step and `renounceOwnership` reverts. See [Why ownership is two-step](#why-ownership-is-two-step).
+
 
 ---
 
-### Why ownership is two-step
 
-`Ownable2Step` looks like boilerplate here, but the stake is higher than for a normal admin role. Under `Owned` the owner is not an administrator sitting *beside* an electorate — **it is the entire electorate.**
-
-A single-step `transferOwnership` to a mistyped or unreachable address would leave `canPropose` false for everyone. And there would be no way back: recovering means calling `changeConstitutionalStrategy` to install a working constitution, that is `onlyGovernance`, so it needs an executed proposal, which needs an eligible proposer — and the only eligible proposer is the owner that was just lost. The governor and every contract it owns would be frozen permanently.
-
-Two-step makes the incoming owner prove control by calling `acceptOwnership` before anything moves. An address that cannot call it simply never becomes the owner, and the mistake costs nothing but a second transaction.
-
-`renounceOwnership` reverts for the same reason — deliberately unsupported, because it is that failure with no typo required. Hand the governor to a Council or a token DAO instead; that is a constitution swap, not an abdication.
-
-The hazard is specific to `Owned`. `Council` uses plain `Ownable`, because its owner manages *membership* while the members are the electorate — a lost council owner freezes the roster but the council keeps governing.
-
----
 
 ### Setting a Council threshold
 
@@ -389,7 +375,7 @@ Two consequences worth planning around:
 
 ## Known limitations
 
-- **A selector-specific veto is escapable.** Vetoes are keyed on `(target, selector)`, so one on `withdrawTo` leaves `transferOwnership` open — governance can move the asset to an ungated governor and withdraw from there. **Only a wildcard veto is actually hard.** Register hard vetoes on `ANY_SELECTOR`.
+- **A selector-specific veto is escapable.** Vetoes are keyed on `(target, selector)`, so one on `withdrawTo` leaves `transferOwnership` open — governance can move the asset to an ungated governor and withdraw from there. **Only a wildcard veto is actually hard.** Register hard vetoes on `ANY_SELECTOR`. Must be initialized safely with wildcard registration if required.
 - **Installing a veto is not retroactive.** `delegates[proposalId]` is snapshotted at proposal time, so proposals already in flight are unaffected. Audit open proposals when adding one.
 - **A `Hard` veto whose holder disappears freezes that slot permanently.** That is the point of `Hard`, but it means handing one out is irreversible.
 
