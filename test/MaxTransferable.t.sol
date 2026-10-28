@@ -2,7 +2,7 @@
 pragma solidity ^0.8.20;
 
 import {Test} from "forge-std/Test.sol";
-import {MaxTransferable} from "../src/tokens/Rules.sol/MaxTransferable.sol";
+import {MaxTransferable} from "../src/compliance/rules/MaxTransferable.sol";
 
 contract MaxTransferableTest is Test {
     MaxTransferable rule;

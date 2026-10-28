@@ -6,9 +6,9 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-import {Governor, DelegateRegistration, VotingParametersRegistration} from "../src/governance/Governer.sol";
-import {Proposal, VotingParameters} from "../src/governance/interface/IGoverner.sol";
-import {RWAHolder} from "../src/governance/constitution/RWAHolder/RWAHolder.sol";
+import {Governor, DelegateRegistration, VotingParametersRegistration} from "../src/governance/Governor.sol";
+import {Proposal, VotingParameters} from "../src/governance/IGoverner.sol";
+import {RWAHolder} from "../src/governance/constitution/RWAHolder.sol";
 
 contract MockRWA is ERC20 {
     constructor() ERC20("RWA", "RWA") {}

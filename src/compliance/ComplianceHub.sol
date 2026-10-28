@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {IRule} from "../token policy/IRule.sol";
-import {IComplianceHub} from "../token policy/IComplianceHub.sol";
+import {IRule} from "./IRule.sol";
+import {IComplianceHub} from "./IComplianceHub.sol";
 import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 
 struct Rule {
@@ -51,8 +51,26 @@ contract ComplianceHub is IComplianceHub, AccessControl {
         _grantRole(DEFAULT_ADMIN_ROLE, msg.sender);
     }
 
+    enum Query { Transfer, Send, Receive }
+
     function canTransfer(address token, address from, address to, uint256 amt)
         external view returns (bool)
+    {
+        return _evaluate(token, Query.Transfer, from, to, amt);
+    }
+
+    // Account-level eligibility for ERC-7943 canSend / canReceive: every rule
+    // the token enforces must accept the account.
+    function canSend(address token, address account) external view returns (bool) {
+        return _evaluate(token, Query.Send, account, address(0), 0);
+    }
+
+    function canReceive(address token, address account) external view returns (bool) {
+        return _evaluate(token, Query.Receive, address(0), account, 0);
+    }
+
+    function _evaluate(address token, Query query, address from, address to, uint256 amt)
+        private view returns (bool)
     {
         uint256 remaining = policy[token];
         while (remaining != 0) {
@@ -66,9 +84,12 @@ contract ComplianceHub is IComplianceHub, AccessControl {
             // (e.g. a metamorphic contract redeployed at the same address).
             if (rule.ruleAddress.codehash != rule.codeHash) revert RULE_CODE_CHANGED(i);
 
-            if (!IRule(rule.ruleAddress).check(token, from, to, amt, ruleParams[token][i].params)) {
-                return false;
-            }
+            IRule r = IRule(rule.ruleAddress);
+            bytes memory params = ruleParams[token][i].params;
+            bool ok = query == Query.Transfer ? r.check(token, from, to, amt, params)
+                : query == Query.Send ? r.canSend(token, from, params)
+                : r.canReceive(token, to, params);
+            if (!ok) return false;
             remaining &= remaining - 1;   // clear lowest set bit, move to the next one
         }
         return true;

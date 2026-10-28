@@ -5,8 +5,8 @@ import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegistration} from "../src/governance/Governer.sol";
-import {Owned} from "../src/governance/constitution/owned/owned.sol";
+import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegistration} from "../src/governance/Governor.sol";
+import {Owned} from "../src/governance/constitution/Owned.sol";
 import {MockSafe} from "./mocks/MockSafe.sol";
 
 contract Vault is Ownable {

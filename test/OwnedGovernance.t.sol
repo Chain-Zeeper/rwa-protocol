@@ -6,10 +6,10 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
-import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegistration} from "../src/governance/Governer.sol";
-import {Proposal, VotingParameters} from "../src/governance/interface/IGoverner.sol";
-import {Council} from "../src/governance/constitution/council/council.sol";
-import {Owned} from "../src/governance/constitution/owned/owned.sol";
+import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegistration} from "../src/governance/Governor.sol";
+import {Proposal, VotingParameters} from "../src/governance/IGoverner.sol";
+import {Council} from "../src/governance/constitution/Council.sol";
+import {Owned} from "../src/governance/constitution/Owned.sol";
 import {ConstitutionRegistry} from "../src/governance/constitution/ConstitutionRegistry.sol";
 
 // a target that fails, to exercise how execution surfaces the reason

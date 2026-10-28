@@ -5,8 +5,8 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 
-import {IGoverner, Proposal, VotingParameters} from "../../interface/IGoverner.sol";
-import {IConstitution} from "../interface/IConstitution.sol";
+import {IGoverner, Proposal, VotingParameters} from "../IGoverner.sol";
+import {IConstitution} from "./IConstitution.sol";
 
 // The degenerate constitution: a single address decides everything. Owner may
 // be an EOA, a Safe, or another governor.

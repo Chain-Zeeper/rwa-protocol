@@ -15,8 +15,12 @@ import {ERC1155Holder} from "@openzeppelin/contracts/token/ERC1155/utils/ERC1155
 
 // ERC-4337 smart account owned by a P-256 key living on the villager's phone
 // (Secure Enclave / Android Keystore / passkey). Accepts either a WebAuthn
-// assertion (passkeys) or a raw 64-byte P-256 signature (native keystore), so
-// the app can use whichever the device supports.
+// assertion (passkeys) or a raw 64-byte P-256 signature (native keystore).
+//
+// The app uses the native keystore path: a device-bound key behind the phone's
+// biometric, created after NDI onboarding, with NDI re-verification plus the
+// guardian as recovery. The WebAuthn path is kept, unused, so passkeys stay an
+// option later without a new implementation.
 //
 // A single implementation is deployed; users get EIP-1167 clones from
 // NdiOnChainAccFactory. The entry point is an immutable of the

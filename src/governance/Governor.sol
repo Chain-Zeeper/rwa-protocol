@@ -6,8 +6,8 @@ import {ERC2771Context} from "@openzeppelin/contracts/metatx/ERC2771Context.sol"
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
-import "./interface/IGoverner.sol";
-import {IConstitution} from "./constitution/interface/IConstitution.sol";
+import "./IGoverner.sol";
+import {IConstitution} from "./constitution/IConstitution.sol";
 
 
 // Both levels are real vetoes -- the delegate must approve before the hub can
@@ -613,13 +613,16 @@ contract Governor is IGoverner, Initializable, ReentrancyGuard, ERC2771Context {
         }
     }
 
-    // the governor holds the treasury it votes over
+    // Not a treasury -- assets live in the vaults it controls -- but a proposal
+    // may need to carry value, and stray ETH can always be rescued.
     receive() external payable {}
 
     // ---------------------------------------------------------------
     // rescue
     // ---------------------------------------------------------------
 
+    // Returns funds sent here by mistake. Needs a vote but consults no veto on
+    // the token, so veto-protected assets belong in a vault, not here.
     // token address(0) means ETH; amount type(uint256).max means the whole
     // balance, since the amount is fixed in actionHash while the balance is not
     function rescue(address token, address to, uint256 amount) external onlyGovernance {
@@ -653,9 +656,11 @@ contract Governor is IGoverner, Initializable, ReentrancyGuard, ERC2771Context {
         Proposal storage proposal = proposals[proposalId];
         require(block.timestamp >= proposal.voteStart && block.timestamp <= proposal.voteEnd, "Voting is closed");
         require(!hasVoted[proposalId][voter], "Already voted");
-        require(IConstitution(constitution).canVote(voter), "Cannot vote");
-        hasVoted[proposalId][voter] = true;
+        // Eligibility is weight on this proposal, not canVote: getVotes can pin
+        // it to the proposal (as Council does to voteStart), canVote cannot.
         uint256 weight = IConstitution(constitution).getVotes(address(this), proposalId, voter);
+        require(weight > 0, "Cannot vote");
+        hasVoted[proposalId][voter] = true;
         proposal.forVotes += support ? weight : 0;
         proposal.againstVotes += support ? 0 : weight;
         emit VoteCast(proposalId, voter, support, weight);

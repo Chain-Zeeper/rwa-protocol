@@ -8,10 +8,10 @@ import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.s
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import {ConstitutionRegistry} from "../src/governance/constitution/ConstitutionRegistry.sol";
-import {IConstitutionRegistry} from "../src/governance/constitution/interface/IConstitutionRegistry.sol";
-import {Council} from "../src/governance/constitution/council/council.sol";
-import {RWAHolder} from "../src/governance/constitution/RWAHolder/RWAHolder.sol";
-import {VotingParameters} from "../src/governance/interface/IGoverner.sol";
+import {IConstitutionRegistry} from "../src/governance/constitution/IConstitutionRegistry.sol";
+import {Council} from "../src/governance/constitution/Council.sol";
+import {RWAHolder} from "../src/governance/constitution/RWAHolder.sol";
+import {VotingParameters} from "../src/governance/IGoverner.sol";
 
 // Plain mintable ERC20 stand-in for RWA.sol, which has no mint of its own and
 // checks every transfer against a ComplianceHub

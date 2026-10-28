@@ -5,10 +5,10 @@ import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegistration} from "../src/governance/Governer.sol";
-import {Proposal} from "../src/governance/interface/IGoverner.sol";
-import {Council} from "../src/governance/constitution/council/council.sol";
-import {Owned} from "../src/governance/constitution/owned/owned.sol";
+import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegistration} from "../src/governance/Governor.sol";
+import {Proposal} from "../src/governance/IGoverner.sol";
+import {Council} from "../src/governance/constitution/Council.sol";
+import {Owned} from "../src/governance/constitution/Owned.sol";
 
 contract LifecyclePool is Ownable {
     uint256 public feeBps;

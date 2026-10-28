@@ -14,8 +14,8 @@ import {
     RULE_NOT_ON,
     STALE_POLICY
 } from "../src/compliance/ComplianceHub.sol";
-import {IRule} from "../src/token policy/IRule.sol";
-import {MaxTransferable} from "../src/tokens/Rules.sol/MaxTransferable.sol";
+import {IRule} from "../src/compliance/IRule.sol";
+import {MaxTransferable} from "../src/compliance/rules/MaxTransferable.sol";
 
 // Exposes the internal bit-position search for direct fuzzing.
 contract ComplianceHubHarness is ComplianceHub {
@@ -28,6 +28,11 @@ contract ComplianceHubHarness is ComplianceHub {
 // deployment registered at every index lets a test pick exactly which rules fail.
 contract ParamRule is IRule {
     function check(address, address, address, uint256, bytes memory params) external pure returns (bool) {
+        return _pass(params);
+    }
+    function canSend(address, address, bytes memory params) external pure returns (bool) { return _pass(params); }
+    function canReceive(address, address, bytes memory params) external pure returns (bool) { return _pass(params); }
+    function _pass(bytes memory params) private pure returns (bool) {
         return params.length == 0 || abi.decode(params, (bool));
     }
     function name() external pure returns (string memory) { return "ParamRule"; }
@@ -40,6 +45,8 @@ contract TokenEchoRule is IRule {
     function check(address token, address, address, uint256, bytes memory params) external pure returns (bool) {
         return token == abi.decode(params, (address));
     }
+    function canSend(address, address, bytes memory) external pure returns (bool) { return true; }
+    function canReceive(address, address, bytes memory) external pure returns (bool) { return true; }
     function name() external pure returns (string memory) { return "TokenEchoRule"; }
     function ruleReference() external pure returns (string memory) { return "TokenEchoRule"; }
 }
@@ -120,6 +127,24 @@ contract ComplianceHubTest is Test {
         _setMask(mask, failMask);
         assertEq(hub.policy(token), mask);
         assertEq(hub.canTransfer(token, alice, bob, 1), mask & failMask == 0);
+    }
+
+    // canSend / canReceive walk the same rules: they fail iff some enforced
+    // rule is configured to fail.
+    function testFuzz_canSendReceiveMatchReference(uint256 mask, uint256 failMask) public {
+        _registerParamRule(256);
+        _setMask(mask, failMask);
+        assertEq(hub.canSend(token, alice), mask & failMask == 0);
+        assertEq(hub.canReceive(token, alice), mask & failMask == 0);
+    }
+
+    function test_suspendedRuleFailsSendAndReceive() public {
+        _registerParamRule(1);
+        _apply(0, "");
+        vm.prank(auditor);
+        hub.suspendRule(0);
+        assertFalse(hub.canSend(token, alice));
+        assertFalse(hub.canReceive(token, alice));
     }
 
     function test_maxTransferableEndToEnd() public {

@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import  "../../interface/IGoverner.sol";
-import {IConstitution} from "../interface/IConstitution.sol";
+import  "../IGoverner.sol";
+import {IConstitution} from "./IConstitution.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 import {Checkpoints} from "@openzeppelin/contracts/utils/structs/Checkpoints.sol";
@@ -19,6 +19,11 @@ contract Council is IConstitution, Ownable,Initializable {
     // threshold/quorum checks can look up membership as of proposal creation
     // instead of the (manipulable) current count
     Checkpoints.Trace208 private _totalCouncilMembersCheckpoints;
+    // per-member history (1 = member, 0 = not), so a ballot is weighed by
+    // membership at proposal creation, the same moment the quorum/threshold
+    // denominator is read -- as OZ Governor reads getPastVotes at the snapshot.
+    // Joining mid-vote earns no say in it; leaving mid-vote doesn't lose one.
+    mapping(address => Checkpoints.Trace208) private _membershipCheckpoints;
 
     // fallback quorum/threshold/voting-period used when the governor has no
     // per-target/selector override registered for a proposal's actions
@@ -70,6 +75,7 @@ contract Council is IConstitution, Ownable,Initializable {
         require(!isCouncil[councilMember], "CouncilState: Already a council member");
         totalCouncilMembers += 1;
         isCouncil[councilMember] = true;
+        _membershipCheckpoints[councilMember].push(SafeCast.toUint48(block.timestamp), 1);
         _totalCouncilMembersCheckpoints.push(SafeCast.toUint48(block.timestamp), SafeCast.toUint208(totalCouncilMembers));
         emit CouncilMemberAdded( councilMember);
     }
@@ -81,6 +87,7 @@ contract Council is IConstitution, Ownable,Initializable {
         require(isCouncil[councilMember], "CouncilState: Not a council member");
         totalCouncilMembers -= 1;
         isCouncil[councilMember] = false;
+        _membershipCheckpoints[councilMember].push(SafeCast.toUint48(block.timestamp), 0);
         _totalCouncilMembersCheckpoints.push(SafeCast.toUint48(block.timestamp), SafeCast.toUint208(totalCouncilMembers));
         emit CouncilMemberRemoved( councilMember);
     }
@@ -97,8 +104,15 @@ contract Council is IConstitution, Ownable,Initializable {
         return "Council";
     }
 
+    // membership of `account` as of `timepoint` (a block timestamp). Unlike the
+    // total, the current second is allowed: ballots can be cast in the block
+    // that creates the proposal.
+    function wasCouncilMemberAt(address account, uint256 timepoint) public view returns (bool) {
+        return _membershipCheckpoints[account].upperLookup(SafeCast.toUint48(timepoint)) == 1;
+    }
+
     function getVotes(address governor, uint256 proposal, address voter) external view returns (uint256){
-        return isCouncil[voter] ? 1 : 0;
+        return wasCouncilMemberAt(voter, IGoverner(governor).getProposal(proposal).voteStart) ? 1 : 0;
     }
 
     function getVotingPower(address voter) external view returns (uint256){
@@ -138,11 +152,12 @@ contract Council is IConstitution, Ownable,Initializable {
         return false;
     }
 
-    // default returns false until proposer eligibility is designed
     function canPropose(address proposer) external view returns (bool){
         return isCouncil[proposer];
     }
 
+    // Current membership. The governor weighs ballots with getVotes, which is
+    // pinned to the proposal; this answers "is a member now".
     function canVote(address voter) external view returns (bool){
         return isCouncil[voter];
     }

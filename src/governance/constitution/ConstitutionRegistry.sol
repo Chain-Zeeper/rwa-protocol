@@ -3,7 +3,7 @@ pragma solidity ^0.8.13;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
-import {IConstitutionRegistry} from "./interface/IConstitutionRegistry.sol";
+import {IConstitutionRegistry} from "./IConstitutionRegistry.sol";
 
 // Registry + EIP-1167 clone factory for IConstitution implementations.
 // Registration is owner-gated; deploying from a registered template is open.

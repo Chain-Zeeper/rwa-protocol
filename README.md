@@ -30,13 +30,15 @@ It also lets them serve **at the same time**. A veto holder is itself a `Governo
 
 ## The two gates
 
-A `Governor` holds the treasury and owns the protocol's contracts, but decides almost nothing itself. It delegates two separate judgements and requires both.
+A `Governor` owns the protocol's contracts, but decides almost nothing itself. It delegates two separate judgements and requires both.
+
+It is not a treasury: assets live in vaults and Safes it controls, and vetoes are registered on those. Its own balance is incidental, and `rescue` exists only to return funds sent to it by mistake. It needs a vote but consults no veto, so don't keep veto-protected funds in the governor itself.
 
 ```mermaid
 flowchart LR
     C["<b>Constitution</b><br/>who may act,<br/>what passes"]
     D["<b>Delegates</b><br/>per target + selector"]
-    G["<b>Governor</b><br/>holds the treasury<br/>owns the contracts"]
+    G["<b>Governor</b><br/>owns the contracts"]
     T["<b>Target</b><br/>vault, token, registry"]
 
     C -->|hasPassed| G
@@ -276,7 +278,7 @@ Both registries are owner-gated for *registration* and open for *deployment*. `d
 
 Initializers take their authority as a **parameter**, never `msg.sender` — the registry is the caller.
 
-**The governor's own selectors can be seeded at deployment.** A governor's address is deterministic, so it can be wired to gate its own `changeConstitutionalStrategy` in the very transaction that creates it. Without that, the most powerful action in the system is ungated in the window before the first proposal lands.
+**The governor's own selectors can be seeded at deployment.** `GovernerFactory` deploys governors with CREATE2, salted by the caller and a salt they choose, so `predictGovernor(deployer, version, salt)` gives the address up front and no other deployment can take or shift it. Use that address as the registration target to gate the governor's own `changeConstitutionalStrategy` in the very transaction that creates it. Without that, the most powerful action in the system is ungated in the window before the first proposal lands.
 
 ### Smart accounts (ERC-4337)
 
@@ -401,27 +403,39 @@ forge test
 forge coverage --ir-minimum
 ```
 
-252 tests across 24 suites. If a suite ever disappears from a run, `forge clean` — Foundry's incremental cache can silently skip one.
+394 tests across 30 suites. If a suite ever disappears from a run, `forge clean` — Foundry's incremental cache can silently skip one.
 
 ### Layout
 
 ```
-src/governance/
-├── Governer.sol                     # proposals, voting, execution, delegation
-├── GovernerFactory.sol              # versioned Governor templates + deployment
-├── interface/
-│   ├── IGoverner.sol                # Proposal, VotingParameters
-│   └── IGovernerFactory.sol
-└── constitution/
-    ├── ConstitutionRegistry.sol     # versioned constitution templates
-    ├── RWAHolder/RWAHolder.sol      # token-weighted — DRAFT SCAFFOLD, not implemented
-    ├── council/council.sol          # committee, checkpointed membership
-    ├── owned/owned.sol              # single address
-    └── interface/
-        ├── IConstitution.sol
-        └── IConstitutionRegistry.sol
-src/account/
-├── NdiOnChainAcc.sol                # ERC-4337 account, P-256 / WebAuthn signer, guardian recovery
-└── NdiOnChainAccFactory.sol         # CREATE2 clone factory (ERC-4337 initCode target)
+src/
+├── governance/
+│   ├── Governor.sol                     # proposals, voting, execution, delegation
+│   ├── IGoverner.sol                    # Proposal, VotingParameters
+│   ├── GovernerFactory.sol              # versioned Governor templates + deployment
+│   ├── IGovernerFactory.sol
+│   └── constitution/
+│       ├── IConstitution.sol
+│       ├── ConstitutionRegistry.sol     # versioned constitution templates
+│       ├── IConstitutionRegistry.sol
+│       ├── Council.sol                  # committee, checkpointed membership
+│       ├── Owned.sol                    # single address
+│       └── RWAHolder.sol                # token-weighted — DRAFT SCAFFOLD, not implemented
+├── compliance/
+│   ├── ComplianceHub.sol                # per-token rule bitmask, shared rule registry
+│   ├── IComplianceHub.sol
+│   ├── IRule.sol
+│   └── rules/
+│       ├── KYC.sol                      # EAS-backed KYC tiers
+│       └── MaxTransferable.sol          # per-transfer amount cap
+├── token/
+│   ├── RWA.sol                          # abstract ERC-7943 (uRWA) token, checks the hub
+│   └── examples/
+│       └── RiverFront.sol               # example project token, one role per action
+├── interfaces/
+│   └── IERC7943.sol                     # ERC-7943 (uRWA) fungible interface
+└── account/
+    ├── NdiOnChainAcc.sol                # ERC-4337 account, P-256 / WebAuthn signer, guardian recovery
+    └── NdiOnChainAccFactory.sol         # CREATE2 clone factory (ERC-4337 initCode target)
 script/DeployNdiOnChainAcc.s.sol     # deterministic deploy to Chiado / Gnosis
 ```

@@ -8,7 +8,7 @@ import {SchemaRegistry} from "@eas/SchemaRegistry.sol";
 import {ISchemaRegistry} from "@eas/ISchemaRegistry.sol";
 import {Attestation} from "@eas/Common.sol";
 
-import {KYC, KycTier, NOT_KYCD} from "../src/tokens/Rules.sol/KYC.sol";
+import {KYC, KycTier, NOT_KYCD} from "../src/compliance/rules/KYC.sol";
 import {ComplianceHub} from "../src/compliance/ComplianceHub.sol";
 
 contract KYCTest is Test {
@@ -133,6 +133,18 @@ contract KYCTest is Test {
     function test_burnAlwaysAllowed() public view {
         assertTrue(_canTransfer(basic, address(0)));
         assertTrue(_canTransfer(nobody, address(0)));
+    }
+
+    function test_canSendNeedsFullTier() public view {
+        assertTrue(kyc.canSend(token, full, ""));
+        assertFalse(kyc.canSend(token, basic, ""));
+        assertFalse(kyc.canSend(token, nobody, ""));
+    }
+
+    function test_canReceiveNeedsAnyTier() public view {
+        assertTrue(kyc.canReceive(token, full, ""));
+        assertTrue(kyc.canReceive(token, basic, ""));
+        assertFalse(kyc.canReceive(token, nobody, ""));
     }
 
     // ------------------------------------------------------------------- revoke

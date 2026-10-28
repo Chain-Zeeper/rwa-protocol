@@ -5,9 +5,9 @@ import {Test} from "forge-std/Test.sol";
 import {ERC2771Forwarder} from "@openzeppelin/contracts/metatx/ERC2771Forwarder.sol";
 import {Errors} from "@openzeppelin/contracts/utils/Errors.sol";
 
-import {Governor, DelegateRegistration, VotingParametersRegistration} from "../src/governance/Governer.sol";
-import {Proposal} from "../src/governance/interface/IGoverner.sol";
-import {Council} from "../src/governance/constitution/council/council.sol";
+import {Governor, DelegateRegistration, VotingParametersRegistration} from "../src/governance/Governor.sol";
+import {Proposal} from "../src/governance/IGoverner.sol";
+import {Council} from "../src/governance/constitution/Council.sol";
 import {GovernerFactory} from "../src/governance/GovernerFactory.sol";
 import {ConstitutionRegistry} from "../src/governance/constitution/ConstitutionRegistry.sol";
 
@@ -58,7 +58,7 @@ contract ForwarderTest is Test {
             1,
             abi.encodeCall(Council.initialize, (address(this), 5000, 5000, VOTING_PERIOD, members)),
             new DelegateRegistration[](0),
-            new VotingParametersRegistration[](0)
+            new VotingParametersRegistration[](0), bytes32(0)
         );
         governor = Governor(payable(g));
         council = Council(c);
@@ -166,7 +166,7 @@ contract ForwarderTest is Test {
             1,
             abi.encodeCall(Council.initialize, (address(this), 5000, 5000, VOTING_PERIOD, new address[](0))),
             new DelegateRegistration[](0),
-            new VotingParametersRegistration[](0)
+            new VotingParametersRegistration[](0), bytes32(uint256(1))
         );
         assertEq(Governor(payable(second)).trustedForwarder(), address(forwarder));
     }
@@ -314,7 +314,7 @@ contract ForwarderTest is Test {
             1,
             abi.encodeCall(Council.initialize, (address(this), 5000, 5000, VOTING_PERIOD, new address[](0))),
             new DelegateRegistration[](0),
-            new VotingParametersRegistration[](0)
+            new VotingParametersRegistration[](0), bytes32(0)
         );
 
         assertEq(Governor(payable(g)).trustedForwarder(), address(0));

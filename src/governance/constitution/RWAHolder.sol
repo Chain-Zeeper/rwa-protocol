@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.27;
-import { IConstitution } from "../interface/IConstitution.sol";
-import { IGoverner, Proposal, VotingParameters } from "../../interface/IGoverner.sol";
+import { IConstitution } from "./IConstitution.sol";
+import { IGoverner, Proposal, VotingParameters } from "../IGoverner.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {Initializable} from "@openzeppelin/contracts/proxy/utils/Initializable.sol";
 

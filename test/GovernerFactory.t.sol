@@ -5,9 +5,9 @@ import {Test} from "forge-std/Test.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {ERC2771Forwarder} from "@openzeppelin/contracts/metatx/ERC2771Forwarder.sol";
 
-import {Governor, DelegateRegistration, VotingParametersRegistration} from "../src/governance/Governer.sol";
-import {Proposal} from "../src/governance/interface/IGoverner.sol";
-import {Council} from "../src/governance/constitution/council/council.sol";
+import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegistration} from "../src/governance/Governor.sol";
+import {Proposal} from "../src/governance/IGoverner.sol";
+import {Council} from "../src/governance/constitution/Council.sol";
 import {GovernerFactory} from "../src/governance/GovernerFactory.sol";
 import {ConstitutionRegistry} from "../src/governance/constitution/ConstitutionRegistry.sol";
 
@@ -57,6 +57,9 @@ contract GovernerFactoryTest is Test {
         return abi.encodeCall(Council.initialize, (address(this), quorumBps, thresholdBps, VOTING_PERIOD, members));
     }
 
+    // A fresh salt per deployment: CREATE2 refuses a repeat from the same caller.
+    uint256 nextSalt;
+
     function _deployVillageGovernance() internal returns (Governor governor, Council council) {
         // 50/50 quorum+threshold so 2-of-3 passes cleanly
         (address g, address s) = factory.deployGovernance(
@@ -64,7 +67,7 @@ contract GovernerFactoryTest is Test {
             1,
             _councilInitData(5000, 5000),
             new DelegateRegistration[](0),
-            new VotingParametersRegistration[](0)
+            new VotingParametersRegistration[](0), bytes32(nextSalt++)
         );
         governor = Governor(payable(g));
         council = Council(s);
@@ -99,7 +102,7 @@ contract GovernerFactoryTest is Test {
         vm.expectRevert("unknown governance version");
         factory.deployGovernance(
             99, 1, _councilInitData(5000, 5000),
-            new DelegateRegistration[](0), new VotingParametersRegistration[](0)
+            new DelegateRegistration[](0), new VotingParametersRegistration[](0), bytes32(0)
         );
     }
 
@@ -107,7 +110,7 @@ contract GovernerFactoryTest is Test {
         vm.expectRevert("unknown constitution version");
         factory.deployGovernance(
             1, 99, _councilInitData(5000, 5000),
-            new DelegateRegistration[](0), new VotingParametersRegistration[](0)
+            new DelegateRegistration[](0), new VotingParametersRegistration[](0), bytes32(0)
         );
     }
 
@@ -128,7 +131,7 @@ contract GovernerFactoryTest is Test {
         vm.expectRevert("governance version deprecated");
         factory.deployGovernance(
             1, 1, _councilInitData(5000, 5000),
-            new DelegateRegistration[](0), new VotingParametersRegistration[](0)
+            new DelegateRegistration[](0), new VotingParametersRegistration[](0), bytes32(0)
         );
     }
 
@@ -165,7 +168,7 @@ contract GovernerFactoryTest is Test {
         vm.expectRevert("constitution version deprecated");
         factory.deployGovernance(
             1, 1, _councilInitData(5000, 5000),
-            new DelegateRegistration[](0), new VotingParametersRegistration[](0)
+            new DelegateRegistration[](0), new VotingParametersRegistration[](0), bytes32(0)
         );
     }
 
@@ -490,5 +493,82 @@ contract GovernerFactoryTest is Test {
     function test_RevertWhen_ConstructedWithZeroRegistry() public {
         vm.expectRevert("zero constitution registry");
         new GovernerFactory(address(this), address(0));
+    }
+
+    // ---------------------------------------------------------------
+    // deterministic governor addresses
+    // ---------------------------------------------------------------
+
+    function test_PredictGovernorMatchesDeployment() public {
+        address predicted = factory.predictGovernor(address(this), 1, "village");
+        (address g,) = factory.deployGovernance(
+            1, 1, _councilInitData(5000, 5000),
+            new DelegateRegistration[](0), new VotingParametersRegistration[](0), "village"
+        );
+        assertEq(g, predicted);
+    }
+
+    // The prediction is keyed on the deployer, so another deployment landing
+    // first (same version, even the same salt) can't take or shift the address.
+    function test_PredictionSurvivesAnotherDeploymentFirst() public {
+        address predicted = factory.predictGovernor(address(this), 1, "village");
+
+        vm.prank(outsider);
+        (address theirs,) = factory.deployGovernance(
+            1, 1, _councilInitData(5000, 5000),
+            new DelegateRegistration[](0), new VotingParametersRegistration[](0), "village"
+        );
+
+        (address ours,) = factory.deployGovernance(
+            1, 1, _councilInitData(5000, 5000),
+            new DelegateRegistration[](0), new VotingParametersRegistration[](0), "village"
+        );
+        assertEq(ours, predicted);
+        assertTrue(theirs != ours);
+    }
+
+    // The point of predicting: the governor's own constitution swap is vetoed
+    // from the transaction that creates it.
+    function test_GovernorCanGateItsOwnConstitutionSwapAtDeploy() public {
+        address vetoHolder = makeAddr("vetoHolder");
+        address predicted = factory.predictGovernor(address(this), 1, "village");
+
+        DelegateRegistration[] memory r = new DelegateRegistration[](1);
+        r[0] = DelegateRegistration({
+            target: predicted,
+            delegate: vetoHolder,
+            selector: Governor.changeConstitutionalStrategy.selector,
+            authority: FunctionAuthority.Hard
+        });
+        (address g,) = factory.deployGovernance(
+            1, 1, _councilInitData(5000, 5000), r, new VotingParametersRegistration[](0), "village"
+        );
+
+        (address delegate, FunctionAuthority authority) =
+            Governor(payable(g)).delagateGovernance(g, Governor.changeConstitutionalStrategy.selector);
+        assertEq(delegate, vetoHolder);
+        assertEq(uint8(authority), uint8(FunctionAuthority.Hard));
+    }
+
+    function test_PredictionDependsOnVersion() public {
+        factory.registerGovernance(2, address(new Governor(address(forwarder))));
+        assertTrue(factory.predictGovernor(address(this), 1, "village") != factory.predictGovernor(address(this), 2, "village"));
+    }
+
+    function test_RevertWhen_ReusingSaltFromSameDeployer() public {
+        factory.deployGovernance(
+            1, 1, _councilInitData(5000, 5000),
+            new DelegateRegistration[](0), new VotingParametersRegistration[](0), "village"
+        );
+        bytes memory init = _councilInitData(5000, 5000);
+        vm.expectRevert();
+        factory.deployGovernance(
+            1, 1, init, new DelegateRegistration[](0), new VotingParametersRegistration[](0), "village"
+        );
+    }
+
+    function test_RevertWhen_PredictingUnknownVersion() public {
+        vm.expectRevert("unknown governance version");
+        factory.predictGovernor(address(this), 99, "village");
     }
 }

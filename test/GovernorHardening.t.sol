@@ -5,11 +5,11 @@ import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 
-import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegistration} from "../src/governance/Governer.sol";
-import {IGoverner, Proposal, VotingParameters} from "../src/governance/interface/IGoverner.sol";
-import {Owned} from "../src/governance/constitution/owned/owned.sol";
-import {Council} from "../src/governance/constitution/council/council.sol";
-import {RWAHolder} from "../src/governance/constitution/RWAHolder/RWAHolder.sol";
+import {Governor, DelegateRegistration, FunctionAuthority, VotingParametersRegistration} from "../src/governance/Governor.sol";
+import {IGoverner, Proposal, VotingParameters} from "../src/governance/IGoverner.sol";
+import {Owned} from "../src/governance/constitution/Owned.sol";
+import {Council} from "../src/governance/constitution/Council.sol";
+import {RWAHolder} from "../src/governance/constitution/RWAHolder.sol";
 
 contract Pool is Ownable {
     uint256 public feeBps;
@@ -364,5 +364,95 @@ contract GovernorHardeningTest is Test {
         new ERC1967Proxy(address(impl), abi.encodeCall(
             Governor.initialize, (constitutionAddr, new DelegateRegistration[](0), vp)
         ));
+    }
+
+    // ---------------------------------------------------------------
+    // council ballots are weighed by membership at voteStart
+    // ---------------------------------------------------------------
+
+    function _council3() internal returns (Council c, Governor g, address[] memory m) {
+        m = new address[](3);
+        m[0] = makeAddr("m0");
+        m[1] = makeAddr("m1");
+        m[2] = makeAddr("m2");
+        c = Council(address(new ERC1967Proxy(address(new Council()),
+            abi.encodeCall(Council.initialize, (admin, 10000, 10000, PERIOD, m)))));   // unanimity
+        g = _gov(address(c), new DelegateRegistration[](0));
+        vm.warp(block.timestamp + 1);
+    }
+
+    function _proposeAs(Governor g, address proposer) internal returns (uint256) {
+        address[] memory t = new address[](1);
+        uint256[] memory v = new uint256[](1);
+        bytes[] memory c = new bytes[](1);
+        t[0] = address(g);
+        c[0] = abi.encodeCall(Governor.rescue, (address(0), alice, 0));
+        vm.prank(proposer);
+        return g.propose(t, v, c, keccak256("x"));
+    }
+
+    // Unanimity of the three members at voteStart can't be met by someone who
+    // joined afterwards standing in for a member who didn't vote.
+    function test_MemberAddedMidVoteCannotVote() public {
+        (Council c, Governor g, address[] memory m) = _council3();
+        uint256 id = _proposeAs(g, m[0]);
+        vm.prank(m[0]); g.vote(id, true);
+        vm.prank(m[1]); g.vote(id, true);
+
+        address late = makeAddr("late");
+        vm.warp(block.timestamp + 1);
+        vm.prank(admin);
+        c.addCouncilMember(late);
+        assertTrue(c.canVote(late), "a member now");
+
+        vm.prank(late);
+        vm.expectRevert("Cannot vote");
+        g.vote(id, true);
+
+        vm.warp(block.timestamp + PERIOD + 1);
+        assertFalse(c.hasPassed(address(g), id));
+    }
+
+    // Removal mid-vote doesn't strip a vote the denominator still counts.
+    function test_MemberRemovedMidVoteCanStillVote() public {
+        (Council c, Governor g, address[] memory m) = _council3();
+        uint256 id = _proposeAs(g, m[0]);
+
+        vm.warp(block.timestamp + 1);
+        vm.prank(admin);
+        c.removeCouncilMember(m[2]);
+        assertFalse(c.canVote(m[2]), "not a member now");
+
+        vm.prank(m[0]); g.vote(id, true);
+        vm.prank(m[1]); g.vote(id, true);
+        vm.prank(m[2]); g.vote(id, true);
+
+        vm.warp(block.timestamp + PERIOD + 1);
+        assertTrue(c.hasPassed(address(g), id));
+    }
+
+    // A member who joins counts on proposals created after they joined.
+    function test_NewMemberVotesOnLaterProposals() public {
+        (Council c, Governor g,) = _council3();
+        address late = makeAddr("late");
+        vm.prank(admin);
+        c.addCouncilMember(late);
+        vm.warp(block.timestamp + 1);
+
+        uint256 id = _proposeAs(g, late);
+        vm.prank(late);
+        g.vote(id, true);
+        assertEq(g.getProposal(id).forVotes, 1);
+    }
+
+    function test_WasCouncilMemberAtFollowsHistory() public {
+        (Council c,, address[] memory m) = _council3();
+        uint256 before = block.timestamp;
+        vm.warp(block.timestamp + 1);
+        vm.prank(admin);
+        c.removeCouncilMember(m[0]);
+        assertTrue(c.wasCouncilMemberAt(m[0], before));
+        assertFalse(c.wasCouncilMemberAt(m[0], block.timestamp));
+        assertFalse(c.wasCouncilMemberAt(makeAddr("stranger"), before));
     }
 }

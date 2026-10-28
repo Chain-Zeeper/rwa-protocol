@@ -5,9 +5,9 @@ import {Test} from "forge-std/Test.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-import {Governor, DelegateRegistration, VotingParametersRegistration} from "../src/governance/Governer.sol";
-import {Council} from "../src/governance/constitution/council/council.sol";
-import {RWAHolder} from "../src/governance/constitution/RWAHolder/RWAHolder.sol";
+import {Governor, DelegateRegistration, VotingParametersRegistration} from "../src/governance/Governor.sol";
+import {Council} from "../src/governance/constitution/Council.sol";
+import {RWAHolder} from "../src/governance/constitution/RWAHolder.sol";
 
 contract VoteToken is ERC20 {
     constructor() ERC20("Vote", "V") {}

@@ -3,14 +3,19 @@ pragma solidity ^0.8.13;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Clones} from "@openzeppelin/contracts/proxy/Clones.sol";
-import {IGovernerFactory} from "./interface/IGovernerFactory.sol";
-import {IConstitutionRegistry} from "./constitution/interface/IConstitutionRegistry.sol";
-import {Governor, DelegateRegistration, VotingParametersRegistration} from "./Governer.sol";
+import {IGovernerFactory} from "./IGovernerFactory.sol";
+import {IConstitutionRegistry} from "./constitution/IConstitutionRegistry.sol";
+import {Governor, DelegateRegistration, VotingParametersRegistration} from "./Governor.sol";
 
 // Registry + EIP-1167 clone factory for Governor implementations. Deploys a
 // governor and its constitution together, wiring the fresh constitution into
 // the clone's initializer. Governors are identified by address; names are
 // off-chain.
+//
+// Governors are CREATE2 clones salted by (deployer, salt), so predictGovernor
+// gives the address before deployment and nobody else's deployment can shift
+// it. That is what lets initialize gate the governor's own selectors (e.g.
+// changeConstitutionalStrategy) from block one.
 contract GovernerFactory is IGovernerFactory, Ownable {
     IConstitutionRegistry public immutable constitutionRegistry;
 
@@ -42,7 +47,8 @@ contract GovernerFactory is IGovernerFactory, Ownable {
         uint256 constitutionVersion,
         bytes memory constitutionInitData,
         DelegateRegistration[] memory delegateRegistrations,
-        VotingParametersRegistration[] memory votingParameterRegistrations
+        VotingParametersRegistration[] memory votingParameterRegistrations,
+        bytes32 salt
     ) external returns (address governor, address constitution) {
         address impl = governanceImpl[version];
         require(impl != address(0), "unknown governance version");
@@ -50,9 +56,21 @@ contract GovernerFactory is IGovernerFactory, Ownable {
 
         constitution = constitutionRegistry.deployConstitution(constitutionVersion, constitutionInitData);
 
-        governor = Clones.clone(impl);
+        governor = Clones.cloneDeterministic(impl, _governorSalt(msg.sender, salt));
         Governor(payable(governor)).initialize(constitution, delegateRegistrations, votingParameterRegistrations);
 
         emit GovernanceDeployed(version, governor, constitution);
+    }
+
+    // The address deployGovernance(version, ..., salt) gives when called by
+    // `deployer`. Depends on the implementation, so on `version`.
+    function predictGovernor(address deployer, uint256 version, bytes32 salt) external view returns (address) {
+        address impl = governanceImpl[version];
+        require(impl != address(0), "unknown governance version");
+        return Clones.predictDeterministicAddress(impl, _governorSalt(deployer, salt));
+    }
+
+    function _governorSalt(address deployer, bytes32 salt) private pure returns (bytes32) {
+        return keccak256(abi.encode(deployer, salt));
     }
 }

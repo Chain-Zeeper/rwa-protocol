@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.13;
 
-import {VotingParameters} from "../../interface/IGoverner.sol";
+import {VotingParameters} from "../IGoverner.sol";
 
 interface IConstitution{
     function name() external view returns (string memory);
@@ -27,6 +27,8 @@ interface IConstitution{
     // type(uint256).max opts out explicitly.
     function executionGrace() external view returns (uint256);
     function getDefaultVotingParameters() external view returns (VotingParameters memory);
+    // Whether `voter` is eligible now, for clients. The governor doesn't call
+    // it: a ballot counts iff getVotes for that proposal is non-zero.
     function canVote(address voter) external view returns (bool);
     function canPropose(address proposer) external view returns (bool);
 }

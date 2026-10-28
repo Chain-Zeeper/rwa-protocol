@@ -5,7 +5,7 @@ import {AccessControl} from "@openzeppelin/contracts/access/AccessControl.sol";
 import {IEAS, AttestationRequest, AttestationRequestData, RevocationRequest, RevocationRequestData} from "@eas/IEAS.sol";
 import {ISchemaRegistry} from "@eas/ISchemaRegistry.sol";
 import {ISchemaResolver} from "@eas/resolver/ISchemaResolver.sol";
-import {IRule} from "../../token policy/IRule.sol";
+import {IRule} from "../IRule.sol";
 
 // Basic: can hold and receive.  Full: can hold, receive and send.
 // Not KYC'd (no attestation, or revoked / expired): can't receive or send.
@@ -109,11 +109,26 @@ contract KYC is IRule, AccessControl {
     // (to == 0) needs nothing, so a holder who can't send can still be redeemed.
     function check(address, address _from, address _to, uint256, bytes memory) external view returns (bool) {
         if (_to == address(0)) return true;   // burn
-        (bool toKycd,) = kycOf(_to);
-        if (!toKycd) return false;
-        if (_from == address(0)) return true;   // mint
-        (bool fromKycd, KycTier fromTier) = kycOf(_from);
-        return fromKycd && fromTier == KycTier.Full;
+        if (!_canReceive(_to)) return false;
+        return _from == address(0) || _canSend(_from);   // mint needs only the receiver
+    }
+
+    function canSend(address, address _account, bytes memory) external view returns (bool) {
+        return _canSend(_account);
+    }
+
+    function canReceive(address, address _account, bytes memory) external view returns (bool) {
+        return _canReceive(_account);
+    }
+
+    function _canSend(address account) private view returns (bool) {
+        (bool kycd, KycTier tier) = kycOf(account);
+        return kycd && tier == KycTier.Full;
+    }
+
+    function _canReceive(address account) private view returns (bool) {
+        (bool kycd,) = kycOf(account);
+        return kycd;
     }
 
     function name() external pure returns (string memory) {
